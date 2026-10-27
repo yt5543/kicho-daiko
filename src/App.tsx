@@ -745,7 +745,11 @@ export default function App() {
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div className="flex items-center gap-3 min-w-0">
               <h2 className="text-base font-bold text-slate-900 truncate">
-                {selectedClient ? selectedClient.name : '顧客を選択してください'}
+                {selectedClient
+                  ? selectedClient.name
+                  : clients.length === 0
+                  ? '顧客が登録されていません'
+                  : '顧客を選択してください'}
               </h2>
               {selectedClient && (
                 <div className="flex items-center gap-2 text-xs shrink-0">
@@ -888,7 +892,26 @@ export default function App() {
 
         {/* メイン2カラム（左: レシート画像連続スクロール / 右: 明細グリッド一覧） */}
         <div className="flex-1 overflow-hidden p-4">
-          {!selectedClientId ? (
+          {clients.length === 0 ? (
+            <div className="h-full flex flex-col items-center justify-center bg-white rounded-xl border border-slate-200 p-8 text-center max-w-lg mx-auto my-auto shadow-xs">
+              <div className="w-14 h-14 rounded-full bg-indigo-50 text-indigo-600 flex items-center justify-center text-2xl font-bold mb-4">
+                🏢
+              </div>
+              <h3 className="text-base font-bold text-slate-800">
+                顧客がまだ登録されていません
+              </h3>
+              <p className="text-xs text-slate-500 mt-2 leading-relaxed">
+                記帳代行・レシート確認を始めるには、まず顧客（企業名など）を登録してください。
+              </p>
+              <button
+                type="button"
+                onClick={handleOpenCreateClientModal}
+                className="mt-5 inline-flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 shadow-xs transition-colors cursor-pointer"
+              >
+                ＋ 最初の顧客を登録する
+              </button>
+            </div>
+          ) : !selectedClientId ? (
             <div className="h-full flex items-center justify-center text-sm text-slate-400">
               左のサイドバーから顧客を選択してください。
             </div>
