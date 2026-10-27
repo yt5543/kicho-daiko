@@ -93,8 +93,9 @@ export default function App() {
   const [syncingDrive, setSyncingDrive] = useState<boolean>(false);
   const [infoMessage, setInfoMessage] = useState<string | null>(null);
 
-  // 月指定CSVエクスポート用（初期値: 2026-10）
+  // 月指定エクスポート用（初期値: 2026-10）
   const [exportMonth, setExportMonth] = useState<string>('2026-10');
+  const [exportingJson, setExportingJson] = useState<boolean>(false);
   const [exportingCsv, setExportingCsv] = useState<boolean>(false);
 
   // ローカル画像アップロード用
@@ -620,6 +621,43 @@ export default function App() {
     }
   };
 
+  // 月指定JSONダウンロード処理（次システム連携用）
+  const handleDownloadJson = async () => {
+    if (!selectedClientId || !exportMonth) return;
+    setExportingJson(true);
+    setError(null);
+
+    try {
+      for (const r of receipts) {
+        await saveReceiptToApi(r, 'unreviewed');
+      }
+
+      const res = await fetch(
+        `${API_BASE_URL}/api/clients/${selectedClientId}/receipts/json?month=${encodeURIComponent(
+          exportMonth
+        )}`
+      );
+      if (!res.ok) {
+        const errData = (await res.json().catch(() => ({}))) as { error?: string };
+        throw new Error(errData.error || 'JSONのダウンロードに失敗しました');
+      }
+
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `receipts_${selectedClient?.name ?? selectedClientId}_${exportMonth}.json`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'JSON出力中にエラーが発生しました');
+    } finally {
+      setExportingJson(false);
+    }
+  };
+
   // 月指定CSVダウンロード処理
   const handleDownloadCsv = async () => {
     if (!selectedClientId || !exportMonth) return;
@@ -765,7 +803,7 @@ export default function App() {
 
             {selectedClient && (
               <div className="flex items-center gap-2.5 shrink-0">
-                {/* 月指定CSVエクスポート */}
+                {/* 月指定エクスポート（JSON出力メイン・CSV出力併設） */}
                 <div className="flex items-center gap-1.5 bg-slate-100 p-1 rounded-lg border border-slate-200">
                   <label
                     htmlFor="export-month"
@@ -782,11 +820,21 @@ export default function App() {
                   />
                   <button
                     type="button"
+                    disabled={exportingJson || !exportMonth}
+                    onClick={handleDownloadJson}
+                    className="inline-flex items-center gap-1 px-3 py-1 rounded-md text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 shadow-2xs disabled:opacity-50 transition-colors cursor-pointer"
+                    title="下流システム連携用の階層JSONを出力"
+                  >
+                    <span>{exportingJson ? '出力中...' : '⬇ JSON出力'}</span>
+                  </button>
+                  <button
+                    type="button"
                     disabled={exportingCsv || !exportMonth}
                     onClick={handleDownloadCsv}
-                    className="inline-flex items-center gap-1 px-3 py-1 rounded-md text-xs font-bold text-slate-700 bg-white hover:bg-slate-50 border border-slate-300 shadow-2xs disabled:opacity-50 transition-colors cursor-pointer"
+                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium text-slate-600 bg-white hover:bg-slate-50 border border-slate-300 shadow-2xs disabled:opacity-50 transition-colors cursor-pointer"
+                    title="補助用CSV出力"
                   >
-                    <span>{exportingCsv ? '出力中...' : '⬇ CSV出力'}</span>
+                    <span>{exportingCsv ? '出力中...' : 'CSV'}</span>
                   </button>
                 </div>
 

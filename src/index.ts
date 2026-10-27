@@ -417,6 +417,132 @@ app.get('/api/clients/:clientId/receipts', async (c) => {
 });
 
 /**
+ * GET /api/clients/:clientId/receipts/json?month=YYYY-MM
+ * 指定顧客・指定年月（YYYY-MM）のレシート＆明細行をシステム連携用階層JSON形式で出力
+ */
+app.get('/api/clients/:clientId/receipts/json', async (c) => {
+  const clientId = Number(c.req.param('clientId'));
+  if (Number.isNaN(clientId)) {
+    return c.json({ error: '不正な clientId です' }, 400);
+  }
+
+  const month = c.req.query('month') ?? '';
+  if (!/^\d{4}-\d{2}$/.test(month)) {
+    return c.json({ error: 'month パラメータは YYYY-MM 形式で指定してください' }, 400);
+  }
+
+  try {
+    const client = await c.env.DB.prepare(
+      'SELECT id, name FROM clients WHERE id = ?'
+    )
+      .bind(clientId)
+      .first<Client>();
+
+    if (!client) {
+      return c.json({ error: '指定された顧客が存在しません' }, 404);
+    }
+
+    // 対象月のレシート一覧を取得
+    const { results: receiptRows } = await c.env.DB.prepare(
+      `SELECT id, client_id, drive_file_id, image_url, receipt_date, amount, payee, memo, status, created_at, updated_at
+       FROM receipts
+       WHERE client_id = ? AND receipt_date LIKE ?
+       ORDER BY receipt_date ASC, id ASC`
+    )
+      .bind(clientId, `${month}-%`)
+      .all<Receipt>();
+
+    if (receiptRows.length === 0) {
+      const emptyPayload = {
+        client_id: client.id,
+        client_name: client.name,
+        target_month: month,
+        exported_at: new Date().toISOString(),
+        receipt_count: 0,
+        total_amount: 0,
+        receipts: [],
+      };
+      return new Response(JSON.stringify(emptyPayload, null, 2), {
+        status: 200,
+        headers: {
+          'Content-Type': 'application/json; charset=utf-8',
+          'Content-Disposition': `attachment; filename="receipts_${encodeURIComponent(
+            client.name
+          )}_${month}.json"`,
+        },
+      });
+    }
+
+    // 対象レシートの明細行を取得
+    const { results: itemRows } = await c.env.DB.prepare(
+      `SELECT ri.id, ri.receipt_id, ri.line_number, ri.item_name, ri.amount, ri.tax_rate, ri.is_reduced_tax, ri.is_modified
+       FROM receipt_items ri
+       INNER JOIN receipts r ON r.id = ri.receipt_id
+       WHERE r.client_id = ? AND r.receipt_date LIKE ?
+       ORDER BY ri.receipt_id ASC, ri.line_number ASC, ri.id ASC`
+    )
+      .bind(clientId, `${month}-%`)
+      .all<ReceiptItem>();
+
+    const itemsByReceiptId = new Map<number, ReceiptItem[]>();
+    for (const item of itemRows) {
+      if (!item.receipt_id) continue;
+      const list = itemsByReceiptId.get(item.receipt_id) ?? [];
+      list.push(item);
+      itemsByReceiptId.set(item.receipt_id, list);
+    }
+
+    let overallTotal = 0;
+    const receiptsFormatted = receiptRows.map((r) => {
+      overallTotal += r.amount;
+      const items = (itemsByReceiptId.get(r.id) ?? []).map((i) => ({
+        line_number: i.line_number,
+        item_name: i.item_name,
+        amount: i.amount,
+        tax_rate: i.tax_rate,
+        is_reduced_tax: Boolean(i.is_reduced_tax),
+        is_modified: Boolean(i.is_modified),
+      }));
+
+      return {
+        id: r.id,
+        receipt_date: r.receipt_date,
+        payee: r.payee,
+        total_amount: r.amount,
+        memo: r.memo ?? '',
+        status: r.status,
+        image_url: r.image_url,
+        items,
+      };
+    });
+
+    const exportPayload = {
+      client_id: client.id,
+      client_name: client.name,
+      target_month: month,
+      exported_at: new Date().toISOString(),
+      receipt_count: receiptsFormatted.length,
+      total_amount: overallTotal,
+      receipts: receiptsFormatted,
+    };
+
+    const jsonString = JSON.stringify(exportPayload, null, 2);
+    const filename = `receipts_${encodeURIComponent(client.name)}_${month}.json`;
+
+    return new Response(jsonString, {
+      status: 200,
+      headers: {
+        'Content-Type': 'application/json; charset=utf-8',
+        'Content-Disposition': `attachment; filename="${filename}"`,
+      },
+    });
+  } catch (error) {
+    console.error('Failed to export JSON:', error);
+    return c.json({ error: 'JSON出力に失敗しました' }, 500);
+  }
+});
+
+/**
  * GET /api/clients/:clientId/receipts/csv?month=YYYY-MM
  * 指定顧客・指定年月（YYYY-MM）のレシート＆明細行をCSV形式で出力
  */
