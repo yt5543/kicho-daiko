@@ -1,12 +1,13 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import type {
   Client,
+  OcrStatus,
   Receipt,
   ReceiptItem,
   TaxRateOption,
 } from './types';
 
-export type { Client, Receipt, ReceiptItem, TaxRateOption };
+export type { Client, OcrStatus, Receipt, ReceiptItem, TaxRateOption };
 
 interface EditableItem {
   key: string;
@@ -25,7 +26,10 @@ interface EditableReceipt {
   amount: string;
   payee: string;
   memo: string;
-  status: 'pending_ocr' | 'unreviewed' | 'approved';
+  status: 'unreviewed' | 'approved';
+  ocr_status: OcrStatus;
+  ocr_retry_count: number;
+  ocr_error: string;
   items: EditableItem[];
 }
 
@@ -52,6 +56,9 @@ function mapReceiptToEditable(r: Receipt): EditableReceipt {
     payee: r.payee ?? '',
     memo: r.memo ?? '',
     status: r.status ?? 'unreviewed',
+    ocr_status: r.ocr_status ?? 'pending',
+    ocr_retry_count: r.ocr_retry_count ?? 0,
+    ocr_error: r.ocr_error ?? '',
     items:
       r.items && r.items.length > 0
         ? r.items.map((item) => ({
@@ -746,17 +753,20 @@ export default function App() {
     let totalItems = 0;
     let modifiedItems = 0;
     let pendingOcrCount = 0;
+    let failedOcrCount = 0;
 
     for (const r of receipts) {
-      if (r.status === 'pending_ocr') {
+      if (r.ocr_status === 'pending') {
         pendingOcrCount++;
+      } else if (r.ocr_status === 'failed') {
+        failedOcrCount++;
       }
       totalItems += r.items.length;
       const modCount = r.items.filter((i) => i.is_modified).length;
       modifiedItems += modCount;
     }
 
-    return { totalItems, modifiedItems, pendingOcrCount };
+    return { totalItems, modifiedItems, pendingOcrCount, failedOcrCount };
   }, [receipts]);
 
   return (
@@ -847,6 +857,11 @@ export default function App() {
                   {stats.pendingOcrCount > 0 && (
                     <span className="px-2.5 py-0.5 rounded-full font-bold bg-amber-100 text-amber-900 border border-amber-300">
                       ⚡ OCR待ち: <strong>{stats.pendingOcrCount}</strong> 枚
+                    </span>
+                  )}
+                  {stats.failedOcrCount > 0 && (
+                    <span className="px-2.5 py-0.5 rounded-full font-bold bg-red-100 text-red-800 border border-red-300">
+                      ⚠️ 解析失敗: <strong>{stats.failedOcrCount}</strong> 枚
                     </span>
                   )}
                   <span className="px-2.5 py-0.5 rounded-full font-medium bg-amber-50 text-amber-800 border border-amber-200">
@@ -1102,15 +1117,32 @@ export default function App() {
                             </span>
                           </div>
                           <div className="flex items-center gap-2 shrink-0">
-                            {receipt.status === 'pending_ocr' ? (
+                            {receipt.ocr_status === 'pending' ? (
                               <span className="px-2 py-0.5 rounded bg-amber-500 text-slate-900 text-[11px] font-bold">
-                                ⏳ OCR待ち
+                                {receipt.ocr_retry_count > 0
+                                  ? `⏳ 再試行待ち (${receipt.ocr_retry_count}/3)`
+                                  : '⏳ OCR待ち'}
+                              </span>
+                            ) : receipt.ocr_status === 'processing' ? (
+                              <span className="px-2 py-0.5 rounded bg-indigo-500 text-white text-[11px] font-bold animate-pulse">
+                                🔄 解析中
+                              </span>
+                            ) : receipt.ocr_status === 'failed' ? (
+                              <span
+                                className="px-2 py-0.5 rounded bg-red-600 text-white text-[11px] font-bold cursor-help"
+                                title={receipt.ocr_error}
+                              >
+                                ⚠️ 解析失敗({receipt.ocr_retry_count}回)
                               </span>
                             ) : hasModified ? (
                               <span className="px-2 py-0.5 rounded bg-amber-500/20 text-amber-300 text-[11px] font-semibold">
                                 ✎ 修正あり
                               </span>
-                            ) : null}
+                            ) : (
+                              <span className="px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 text-[11px] font-medium">
+                                ✓ OCR済
+                              </span>
+                            )}
                             <a
                               href={receipt.image_url}
                               target="_blank"
@@ -1256,12 +1288,22 @@ export default function App() {
                                   <span className="text-[11px] text-slate-300 font-mono">
                                     (明細計: ¥{itemsTotal.toLocaleString()})
                                   </span>
-                                  {receipt.status === 'pending_ocr' && (
+                                  {receipt.ocr_status === 'pending' && (
                                     <span className="px-2 py-0.5 rounded bg-amber-500 text-slate-900 text-[11px] font-bold">
-                                      ⏳ OCR解析待ち
+                                      {receipt.ocr_retry_count > 0
+                                        ? `⏳ 再試行待ち (${receipt.ocr_retry_count}/3)`
+                                        : '⏳ OCR解析待ち'}
                                     </span>
                                   )}
-                                  {receipt.status !== 'pending_ocr' && isDiff && (
+                                  {receipt.ocr_status === 'failed' && (
+                                    <span
+                                      className="px-2 py-0.5 rounded bg-red-600 text-white text-[11px] font-bold cursor-help"
+                                      title={receipt.ocr_error}
+                                    >
+                                      ⚠️ OCR失敗({receipt.ocr_retry_count}回)
+                                    </span>
+                                  )}
+                                  {receipt.ocr_status === 'completed' && isDiff && (
                                     <span className="px-1.5 py-0.5 rounded bg-red-500/20 text-red-300 text-[11px]">
                                       差額あり
                                     </span>

@@ -1,5 +1,14 @@
 import type { Bindings, OcrExtractedReceipt } from '../types';
 
+export class GeminiHighDemandError extends Error {
+  constructor(
+    message = 'GoogleのOCR解析サーバーが混雑しています（High demand）。時間をおいて再試行してください。'
+  ) {
+    super(message);
+    this.name = 'GeminiHighDemandError';
+  }
+}
+
 // 大容量画像でもスタックオーバーフローしないチャンク分割型 ArrayBuffer -> Base64 変換
 export function arrayBufferToBase64(buffer: ArrayBuffer | Uint8Array): string {
   const bytes = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
@@ -184,8 +193,8 @@ export async function runOcrExtraction(
 
   if (!jsonText) {
     if (isOverloaded) {
-      throw new Error(
-        'GoogleのOCR解析サーバーが一時的に混雑しています（High demand）。数十秒ほど待ってから再度お試しください。'
+      throw new GeminiHighDemandError(
+        'GoogleのOCR解析サーバーが混雑しています（High demand）。数十秒〜数分ほど時間をおいてから再度お試しください。'
       );
     }
     throw new Error(`レシートの自動解析に失敗しました。詳細: ${lastErrorText}`);

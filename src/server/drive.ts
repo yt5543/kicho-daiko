@@ -1,5 +1,12 @@
-import type { Bindings, Client, OcrExtractedReceipt, Receipt, ReceiptItem } from '../types';
-import { runOcrExtraction } from './ocr';
+import type {
+  Bindings,
+  Client,
+  OcrExtractedReceipt,
+  OcrStatus,
+  Receipt,
+  ReceiptItem,
+} from '../types';
+import { GeminiHighDemandError, runOcrExtraction } from './ocr';
 
 // ファイル名を安全なR2キー用文字列に整形
 export function sanitizeFileName(name: string): string {
@@ -112,7 +119,7 @@ export async function getGoogleDriveAccessToken(
 
 /**
  * 【ステップ1: 画像取り込み】
- * レシート画像を R2 に保存し、D1 に status='pending_ocr'（OCR解析待ち）として登録
+ * レシート画像を R2 に保存し、D1 に status='unreviewed', ocr_status='pending', ocr_retry_count=0 として登録
  * ※ Gemini OCR は呼び出さないため、数秒で爆速完了しタイムアウトしません
  */
 export async function saveReceiptImageToR2AndD1Pending(params: {
@@ -146,10 +153,11 @@ export async function saveReceiptImageToR2AndD1Pending(params: {
   const imageUrl = `/api/r2-images/${uniqueKey}`;
   const today = new Date().toISOString().slice(0, 10);
 
-  // 2. D1データベースに status='pending_ocr' として保存
+  // 2. D1データベースに ocr_status='pending' として保存
   const insertReceiptRes = await env.DB.prepare(
-    `INSERT INTO receipts (client_id, drive_file_id, image_url, receipt_date, amount, payee, memo, status)
-     VALUES (?, ?, ?, ?, ?, ?, ?, 'pending_ocr')`
+    `INSERT INTO receipts
+     (client_id, drive_file_id, image_url, receipt_date, amount, payee, memo, status, ocr_status, ocr_retry_count, ocr_error)
+     VALUES (?, ?, ?, ?, ?, ?, ?, 'unreviewed', 'pending', 0, '')`
   )
     .bind(
       clientId,
@@ -158,7 +166,7 @@ export async function saveReceiptImageToR2AndD1Pending(params: {
       today,
       0,
       originalFileName,
-      'OCR解析待ち'
+      ''
     )
     .run();
 
@@ -181,8 +189,11 @@ export async function saveReceiptImageToR2AndD1Pending(params: {
     receipt_date: today,
     amount: 0,
     payee: originalFileName,
-    memo: 'OCR解析待ち',
-    status: 'pending_ocr',
+    memo: '',
+    status: 'unreviewed',
+    ocr_status: 'pending',
+    ocr_retry_count: 0,
+    ocr_error: '',
     items: [
       {
         line_number: 1,
@@ -198,14 +209,16 @@ export async function saveReceiptImageToR2AndD1Pending(params: {
 
 /**
  * 【ステップ2: 単一レシートのOCR解析実行】
- * R2から画像を読み出して Gemini 3.8 Flash で解析し、D1 を更新して status='unreviewed' に変更
+ * R2から画像を読み出して Gemini 3.8 Flash で解析し、D1 を更新
+ * - ハイデマンドエラー時は即時中断用の例外を再スロー
+ * - 3回失敗で ocr_status='failed'
  */
 export async function processSingleReceiptOcr(
   receiptId: number,
   env: Bindings
 ): Promise<Receipt> {
   const receipt = await env.DB.prepare(
-    `SELECT id, client_id, drive_file_id, image_url, receipt_date, amount, payee, memo, status
+    `SELECT id, client_id, drive_file_id, image_url, receipt_date, amount, payee, memo, status, ocr_status, ocr_retry_count, ocr_error
      FROM receipts WHERE id = ?`
   )
     .bind(receiptId)
@@ -214,6 +227,19 @@ export async function processSingleReceiptOcr(
   if (!receipt) {
     throw new Error(`レシート #${receiptId} が見つかりません`);
   }
+
+  const newRetryCount = (receipt.ocr_retry_count || 0) + 1;
+
+  // 実行中状態に更新
+  await env.DB.prepare(
+    `UPDATE receipts
+     SET ocr_status = 'processing',
+         ocr_retry_count = ?,
+         updated_at = datetime('now')
+     WHERE id = ?`
+  )
+    .bind(newRetryCount, receiptId)
+    .run();
 
   // R2キーを image_url から抽出
   const r2Key = receipt.image_url.replace(/^\/api\/r2-images\//, '');
@@ -231,33 +257,65 @@ export async function processSingleReceiptOcr(
     ocrResult = await runOcrExtraction(imageBuffer, mimeType, fileName, env);
   } catch (ocrError) {
     console.error(`OCR extraction failed for receipt #${receiptId}:`, ocrError);
+
+    // 1. ハイデマンドエラーの場合: 後続処理も止めるため再スロー
+    if (ocrError instanceof GeminiHighDemandError) {
+      await env.DB.prepare(
+        `UPDATE receipts
+         SET ocr_status = 'pending',
+             ocr_error = 'Google側混雑(High Demand)のため一時中断',
+             updated_at = datetime('now')
+         WHERE id = ?`
+      )
+        .bind(receiptId)
+        .run();
+      throw ocrError;
+    }
+
+    // 2. その他のエラー（タイムアウトや形式エラー）
     const errMessage = ocrError instanceof Error ? ocrError.message : String(ocrError);
-    const isTimeout = errMessage.includes('timeout') || errMessage.includes('aborted');
-    const today = new Date().toISOString().slice(0, 10);
-    ocrResult = {
-      receipt_date: receipt.receipt_date || today,
-      payee: receipt.payee || '（要確認：解析失敗）',
-      amount: 0,
-      memo: `※ 自動解析${isTimeout ? 'タイムアウト(90秒超過)' : '失敗'}。画像を確認して手入力してください。`,
-      items: [
-        {
-          item_name: '（品名・金額を手入力）',
-          amount: 0,
-          tax_rate: 10,
-          is_reduced_tax: 0,
-        },
-      ],
+    const isFailedPermanently = newRetryCount >= 3;
+    const finalOcrStatus: OcrStatus = isFailedPermanently ? 'failed' : 'pending';
+    const finalErrorText = isFailedPermanently
+      ? `解析失敗(上限3回到達): ${errMessage}`
+      : `試行${newRetryCount}回目失敗: ${errMessage}`;
+
+    await env.DB.prepare(
+      `UPDATE receipts
+       SET ocr_status = ?,
+           ocr_error = ?,
+           memo = CASE WHEN memo = '' THEN ? ELSE memo END,
+           updated_at = datetime('now')
+       WHERE id = ?`
+    )
+      .bind(
+        finalOcrStatus,
+        finalErrorText,
+        isFailedPermanently
+          ? '※ OCR自動解析失敗(3回)。左の画像を見ながら手入力してください。'
+          : '',
+        receiptId
+      )
+      .run();
+
+    return {
+      ...receipt,
+      ocr_status: finalOcrStatus,
+      ocr_retry_count: newRetryCount,
+      ocr_error: finalErrorText,
     };
   }
 
-  // receipts テーブルの更新 (status を 'unreviewed' に昇格)
+  // 成功時: receipts テーブルを更新
   await env.DB.prepare(
     `UPDATE receipts
      SET receipt_date = ?,
          amount = ?,
          payee = ?,
-         memo = ?,
+         memo = CASE WHEN memo = '' THEN ? ELSE memo END,
          status = 'unreviewed',
+         ocr_status = 'completed',
+         ocr_error = '',
          updated_at = datetime('now')
      WHERE id = ?`
   )
@@ -270,7 +328,7 @@ export async function processSingleReceiptOcr(
     )
     .run();
 
-  // 既存のプレースホルダ明細を削除し、OCR抽出明細行を保存
+  // 明細行の更新
   await env.DB.prepare('DELETE FROM receipt_items WHERE receipt_id = ?')
     .bind(receiptId)
     .run();
@@ -302,8 +360,11 @@ export async function processSingleReceiptOcr(
     receipt_date: ocrResult.receipt_date,
     amount: ocrResult.amount,
     payee: ocrResult.payee,
-    memo: ocrResult.memo ?? '',
+    memo: ocrResult.memo ?? receipt.memo ?? '',
     status: 'unreviewed',
+    ocr_status: 'completed',
+    ocr_retry_count: newRetryCount,
+    ocr_error: '',
     items: ocrResult.items.map((item, idx) => ({
       line_number: idx + 1,
       ...item,
@@ -313,61 +374,82 @@ export async function processSingleReceiptOcr(
 }
 
 /**
- * 特定顧客の pending_ocr レシートを一括で OCR 解析
+ * 特定顧客の pending なレシートを一括で OCR 解析
+ * ハイデマンド発生時は後続を即時中断
  */
 export async function processPendingOcrForClient(
   clientId: number,
   env: Bindings,
   limit = 20
-): Promise<{ processed: number; receipts: Receipt[] }> {
+): Promise<{ processed: number; highDemandAborted: boolean; receipts: Receipt[] }> {
+  // 未実行または3回未満の再試行待ちレシートを取得
   const { results: pendingReceipts } = await env.DB.prepare(
-    `SELECT id FROM receipts WHERE client_id = ? AND status = 'pending_ocr' ORDER BY id ASC LIMIT ?`
+    `SELECT id FROM receipts
+     WHERE client_id = ? AND ocr_status IN ('pending', 'processing') AND ocr_retry_count < 3
+     ORDER BY id ASC LIMIT ?`
   )
     .bind(clientId, limit)
     .all<{ id: number }>();
 
   const receipts: Receipt[] = [];
+  let highDemandAborted = false;
+
   for (const r of pendingReceipts) {
     try {
       const processed = await processSingleReceiptOcr(r.id, env);
       receipts.push(processed);
     } catch (err) {
+      if (err instanceof GeminiHighDemandError) {
+        console.warn(`[OCR Client #${clientId}] High demand detected. Aborting batch immediately.`);
+        highDemandAborted = true;
+        break; // 後続処理を即時中断！
+      }
       console.error(`Failed to process OCR for receipt #${r.id}:`, err);
     }
   }
 
-  return { processed: receipts.length, receipts };
+  return { processed: receipts.length, highDemandAborted, receipts };
 }
 
 /**
- * 全顧客の pending_ocr レシートを順次 OCR 解析（Cron定期実行用）
+ * 全顧客の pending なレシートを順次 OCR 解析（Cron定期実行用）
+ * ハイデマンド発生時は後続を即時中断
  */
 export async function processAllPendingOcrReceipts(
   env: Bindings,
   limit = 30
-): Promise<number> {
+): Promise<{ processedCount: number; highDemandAborted: boolean }> {
   const { results: pendingReceipts } = await env.DB.prepare(
-    `SELECT id FROM receipts WHERE status = 'pending_ocr' ORDER BY id ASC LIMIT ?`
+    `SELECT id FROM receipts
+     WHERE ocr_status IN ('pending', 'processing') AND ocr_retry_count < 3
+     ORDER BY id ASC LIMIT ?`
   )
     .bind(limit)
     .all<{ id: number }>();
 
   let processedCount = 0;
+  let highDemandAborted = false;
+
   for (const r of pendingReceipts) {
     try {
       await processSingleReceiptOcr(r.id, env);
       processedCount++;
     } catch (err) {
+      if (err instanceof GeminiHighDemandError) {
+        console.warn('[Cron OCR] High demand detected. Aborting batch immediately.');
+        highDemandAborted = true;
+        break; // 後続処理を即時中断！
+      }
       console.error(`Cron OCR failed for receipt #${r.id}:`, err);
     }
   }
 
-  return processedCount;
+  return { processedCount, highDemandAborted };
 }
 
 /**
  * 特定顧客の Google Drive フォルダを巡回し、新規レシート画像をR2/D1に取り込む
- * （※ OCRは実行せず status='pending_ocr' として即時登録するため超高速）
+ * （※ OCRは実行せず ocr_status='pending' として即時登録するため超高速）
  */
 export async function syncClientDriveFolder(
   client: Client,
@@ -415,7 +497,7 @@ export async function syncClientDriveFolder(
 
   const ingestedReceipts: Receipt[] = [];
 
-  // 3. 新規ファイルを1件ずつダウンロード → R2保存 → D1に pending_ocr で保存
+  // 3. 新規ファイルを1件ずつダウンロード → R2保存 → D1に pending で保存
   for (const file of newFiles) {
     const downloadUrl = `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(
       file.id

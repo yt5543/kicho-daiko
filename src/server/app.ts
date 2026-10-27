@@ -269,7 +269,8 @@ app.post('/api/clients/:clientId/sync-drive', async (c) => {
 
 /**
  * POST /api/clients/:clientId/run-ocr
- * OCR未実行（pending_ocr）のレシートを一括でGemini OCR解析
+ * OCR未実行（pending）のレシートを一括でGemini OCR解析
+ * Google側ハイデマンド時は後続を即時中断して案内
  */
 app.post('/api/clients/:clientId/run-ocr', async (c) => {
   const clientId = Number(c.req.param('clientId'));
@@ -279,12 +280,20 @@ app.post('/api/clients/:clientId/run-ocr', async (c) => {
 
   try {
     const result = await processPendingOcrForClient(clientId, c.env, 20);
+    let message =
+      result.processed > 0
+        ? `${result.processed} 枚のレシートをOCR解析しました`
+        : 'OCR解析待ちのレシートはありません';
+
+    if (result.highDemandAborted) {
+      message +=
+        '（※Google側が一時的に混雑しているため、処理を中断しました。数十秒〜数分待ってから再度お試しください）';
+    }
+
     return c.json({
-      message:
-        result.processed > 0
-          ? `${result.processed} 枚のレシートをOCR解析しました`
-          : 'OCR解析待ちのレシートはありません',
+      message,
       processed_count: result.processed,
+      high_demand_aborted: result.highDemandAborted,
       receipts: result.receipts,
     });
   } catch (error) {
@@ -412,21 +421,13 @@ app.get('/api/clients/:clientId/receipts', async (c) => {
   const status = c.req.query('status') ?? 'unreviewed';
 
   try {
-    const isUnreviewedQuery = status === 'unreviewed';
-    const statusCondition = isUnreviewedQuery
-      ? `status IN ('pending_ocr', 'unreviewed')`
-      : `status = ?`;
-    const bindParams: (string | number)[] = isUnreviewedQuery
-      ? [clientId]
-      : [clientId, status];
-
     const { results: receiptRows } = await c.env.DB.prepare(
-      `SELECT id, client_id, drive_file_id, image_url, receipt_date, amount, payee, memo, status, created_at, updated_at
+      `SELECT id, client_id, drive_file_id, image_url, receipt_date, amount, payee, memo, status, ocr_status, ocr_retry_count, ocr_error, created_at, updated_at
        FROM receipts
-       WHERE client_id = ? AND ${statusCondition}
+       WHERE client_id = ? AND status = ?
        ORDER BY id ASC`
     )
-      .bind(...bindParams)
+      .bind(clientId, status)
       .all<Omit<Receipt, 'items'>>();
 
     if (receiptRows.length === 0) {
@@ -437,10 +438,10 @@ app.get('/api/clients/:clientId/receipts', async (c) => {
       `SELECT ri.id, ri.receipt_id, ri.line_number, ri.item_name, ri.amount, ri.tax_rate, ri.is_reduced_tax, ri.is_modified
        FROM receipt_items ri
        INNER JOIN receipts r ON r.id = ri.receipt_id
-       WHERE r.client_id = ? AND r.${statusCondition}
+       WHERE r.client_id = ? AND r.status = ?
        ORDER BY ri.receipt_id ASC, ri.line_number ASC, ri.id ASC`
     )
-      .bind(...bindParams)
+      .bind(clientId, status)
       .all<ReceiptItem>();
 
     const itemsByReceiptId = new Map<number, ReceiptItem[]>();
@@ -492,7 +493,7 @@ app.get('/api/clients/:clientId/receipts/json', async (c) => {
 
     // 対象月のレシート一覧を取得
     const { results: receiptRows } = await c.env.DB.prepare(
-      `SELECT id, client_id, drive_file_id, image_url, receipt_date, amount, payee, memo, status, created_at, updated_at
+      `SELECT id, client_id, drive_file_id, image_url, receipt_date, amount, payee, memo, status, ocr_status, ocr_retry_count, ocr_error, created_at, updated_at
        FROM receipts
        WHERE client_id = ? AND receipt_date LIKE ?
        ORDER BY receipt_date ASC, id ASC`

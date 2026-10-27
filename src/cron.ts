@@ -16,9 +16,12 @@ export default {
         const ingestedCount = await syncAllClientsDriveFolders(env);
         console.log(`[Cron Worker] Ingested ${ingestedCount} new receipt images (pending_ocr)`);
 
-        // ステップ2: 取り込んだ画像（および過去の未処理分）を Gemini OCR で解析（status='unreviewed'へ）
-        const processedCount = await processAllPendingOcrReceipts(env, 50);
+        // ステップ2: 取り込んだ画像（および過去の未処理分）を Gemini OCR で解析
+        const { processedCount, highDemandAborted } = await processAllPendingOcrReceipts(env, 50);
         console.log(`[Cron Worker] Processed OCR for ${processedCount} receipts`);
+        if (highDemandAborted) {
+          console.warn('[Cron Worker] OCR batch was aborted early due to Gemini high demand.');
+        }
       })().catch((err) => console.error('[Cron Worker] Daily batch failed:', err))
     );
   },

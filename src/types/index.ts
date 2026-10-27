@@ -38,6 +38,9 @@ export interface ReceiptItem {
   is_modified: number;    // 1: 手で修正済, 0: OCR初期値のまま
 }
 
+// OCR処理状態
+export type OcrStatus = 'pending' | 'processing' | 'completed' | 'failed';
+
 // レシート親データ
 export interface Receipt {
   id: number;
@@ -48,7 +51,10 @@ export interface Receipt {
   amount: number;
   payee: string;
   memo: string;
-  status: 'pending_ocr' | 'unreviewed' | 'approved';
+  status: 'unreviewed' | 'approved';
+  ocr_status: OcrStatus;
+  ocr_retry_count: number;
+  ocr_error: string;
   created_at?: string;
   updated_at?: string;
   items: ReceiptItem[];
@@ -60,7 +66,8 @@ export interface UpdateReceiptRequest {
   amount: number;
   payee: string;
   memo?: string;
-  status?: 'pending_ocr' | 'unreviewed' | 'approved';
+  status?: 'unreviewed' | 'approved';
+  ocr_status?: OcrStatus;
   items: {
     item_name: string;
     amount: number;
