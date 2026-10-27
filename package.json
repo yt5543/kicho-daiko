@@ -9,7 +9,9 @@
     "dev:web": "vite --port 5173",
     "build": "tsc --noEmit && vite build",
     "db:init": "wrangler d1 execute kicho-daiko-db --local --file=./schema.sql",
-    "deploy:api": "wrangler deploy"
+    "deploy:pages": "npm run build && wrangler pages deploy dist --project-name kicho-daiko",
+    "deploy:cron": "wrangler deploy --config wrangler.cron.toml",
+    "deploy": "npm run deploy:pages && npm run deploy:cron"
   },
   "dependencies": {
     "hono": "^4.6.0",
