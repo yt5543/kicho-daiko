@@ -151,7 +151,7 @@ export async function runOcrExtraction(
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(requestBody),
-        signal: AbortSignal.timeout(60000), // 高解像度レシートや混雑時にも耐えられるよう60秒に延長
+        signal: AbortSignal.timeout(90000), // 高解像度レシートや混雑時にも耐えられるよう90秒に延長
       });
 
       if (res.ok) {

@@ -1,4 +1,4 @@
-import type { Bindings, Client, Receipt } from '../types';
+import type { Bindings, Client, OcrExtractedReceipt, Receipt } from '../types';
 import { runOcrExtraction } from './ocr';
 
 // ファイル名を安全なR2キー用文字列に整形
@@ -139,13 +139,35 @@ export async function ingestReceiptImageToR2AndD1(params: {
 
   const imageUrl = `/api/r2-images/${uniqueKey}`;
 
-  // 2. Gemini APIでOCR実行
-  const ocrResult = await runOcrExtraction(
-    imageBuffer,
-    mimeType,
-    originalFileName,
-    env
-  );
+  // 2. Gemini APIでOCR実行（タイムアウトやエラー時はフォールバックして登録を継続）
+  let ocrResult: OcrExtractedReceipt;
+  try {
+    ocrResult = await runOcrExtraction(
+      imageBuffer,
+      mimeType,
+      originalFileName,
+      env
+    );
+  } catch (ocrError) {
+    console.error(`OCR extraction failed for ${originalFileName}:`, ocrError);
+    const errMessage = ocrError instanceof Error ? ocrError.message : String(ocrError);
+    const isTimeout = errMessage.includes('timeout') || errMessage.includes('aborted');
+    const today = new Date().toISOString().slice(0, 10);
+    ocrResult = {
+      receipt_date: today,
+      payee: '（要確認：解析失敗）',
+      amount: 0,
+      memo: `※ 自動解析${isTimeout ? 'タイムアウト(90秒超過)' : '失敗'}。画像を確認して日付・店名・金額を入力してください。`,
+      items: [
+        {
+          item_name: '（品名・金額を手入力）',
+          amount: 0,
+          tax_rate: 10,
+          is_reduced_tax: 0,
+        },
+      ],
+    };
+  }
 
   // 3. D1データベースに status='unreviewed' として保存
   const insertReceiptRes = await env.DB.prepare(
