@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="380" height="520" viewBox="0 0 380 520">
+  <rect width="380" height="520" fill="#ffffff" stroke="#e2e8f0" stroke-width="2" rx="6"/>
+  <text x="190" y="50" font-family="sans-serif" font-size="20" font-weight="bold" text-anchor="middle" fill="#1e293b">JR東日本 東京駅</text>
+  <text x="190" y="80" font-family="sans-serif" font-size="13" text-anchor="middle" fill="#64748b">領収書</text>
+  <line x1="30" y1="100" x2="350" y2="100" stroke="#cbd5e1" stroke-dasharray="4 4"/>
+  <text x="40" y="135" font-family="monospace" font-size="14" fill="#334155">発行日: 2026-10-26</text>
+  <text x="40" y="180" font-family="monospace" font-size="14" fill="#334155">新幹線自由席特急券・乗車券</text>
+  <text x="40" y="210" font-family="monospace" font-size="14" fill="#334155">区間: 東京 → 仙台 (片道)</text>
+  <line x1="30" y1="265" x2="350" y2="265" stroke="#94a3b8"/>
+  <text x="40" y="305" font-family="sans-serif" font-size="18" font-weight="bold" fill="#0f172a">領収額</text>
+  <text x="340" y="305" font-family="monospace" font-size="22" font-weight="bold" text-anchor="end" fill="#0f172a">¥10,890</text>
+  <text x="40" y="335" font-family="monospace" font-size="12" fill="#64748b">（内消費税等 10% ¥990）</text>
+  <line x1="30" y1="365" x2="350" y2="365" stroke="#cbd5e1" stroke-dasharray="4 4"/>
+  <text x="190" y="420" font-family="monospace" font-size="12" text-anchor="middle" fill="#94a3b8">東日本旅客鉄道株式会社</text>
+</svg>

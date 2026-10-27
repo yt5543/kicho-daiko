@@ -1,0 +1,31 @@
+{
+  "name": "kicho-daiko",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently -k \"npm:dev:api\" \"npm:dev:web\"",
+    "dev:api": "wrangler dev src/index.ts --port 8787",
+    "dev:web": "vite --port 5173",
+    "build": "tsc --noEmit && vite build",
+    "db:init": "wrangler d1 execute kicho-daiko-db --local --file=./schema.sql",
+    "deploy:api": "wrangler deploy"
+  },
+  "dependencies": {
+    "hono": "^4.6.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20241022.0",
+    "@tailwindcss/vite": "^4.0.0",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.3",
+    "concurrently": "^9.1.0",
+    "tailwindcss": "^4.0.0",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.10",
+    "wrangler": "^3.83.0"
+  }
+}

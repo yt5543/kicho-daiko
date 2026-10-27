@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="380" height="540" viewBox="0 0 380 540">
+  <rect width="380" height="540" fill="#ffffff" stroke="#e2e8f0" stroke-width="2" rx="6"/>
+  <text x="190" y="50" font-family="sans-serif" font-size="20" font-weight="bold" text-anchor="middle" fill="#1e293b">セブン-イレブン 渋谷駅前店</text>
+  <text x="190" y="80" font-family="sans-serif" font-size="13" text-anchor="middle" fill="#64748b">領収書 / RECEIPT</text>
+  <line x1="30" y1="100" x2="350" y2="100" stroke="#cbd5e1" stroke-dasharray="4 4"/>
+  <text x="40" y="135" font-family="monospace" font-size="14" fill="#334155">日付: 2026-10-25 14:22</text>
+  <text x="40" y="175" font-family="monospace" font-size="14" fill="#334155">コピー用紙 A4 500枚</text>
+  <text x="340" y="175" font-family="monospace" font-size="14" text-anchor="end" fill="#334155">¥680</text>
+  <text x="40" y="205" font-family="monospace" font-size="14" fill="#334155">ボールペン 黒 5本入</text>
+  <text x="340" y="205" font-family="monospace" font-size="14" text-anchor="end" fill="#334155">¥550</text>
+  <text x="40" y="235" font-family="monospace" font-size="14" fill="#334155">緑茶 600ml x2 (※軽減)</text>
+  <text x="340" y="235" font-family="monospace" font-size="14" text-anchor="end" fill="#334155">¥310*</text>
+  <line x1="30" y1="265" x2="350" y2="265" stroke="#94a3b8"/>
+  <text x="40" y="305" font-family="sans-serif" font-size="18" font-weight="bold" fill="#0f172a">合計 (税込)</text>
+  <text x="340" y="305" font-family="monospace" font-size="22" font-weight="bold" text-anchor="end" fill="#0f172a">¥1,540</text>
+  <text x="40" y="335" font-family="monospace" font-size="12" fill="#64748b">10%対象 ¥1,230 (内消費税 ¥111)</text>
+  <text x="40" y="355" font-family="monospace" font-size="12" fill="#64748b">*8%対象   ¥310 (内消費税  ¥22)</text>
+  <line x1="30" y1="380" x2="350" y2="380" stroke="#cbd5e1" stroke-dasharray="4 4"/>
+  <text x="40" y="405" font-family="monospace" font-size="11" fill="#64748b">*印は軽減税率対象商品です</text>
+  <text x="190" y="450" font-family="monospace" font-size="12" text-anchor="middle" fill="#94a3b8">登録番号: T1234567890123</text>
+</svg>
