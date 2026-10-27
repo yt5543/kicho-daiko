@@ -1,5 +1,5 @@
 import type { Bindings } from './types';
-import { syncAllClientsDriveFolders } from './server/drive';
+import { processAllPendingOcrReceipts, syncAllClientsDriveFolders } from './server/drive';
 
 export default {
   // HTTP リクエストは受け付けない（攻撃面ゼロ）
@@ -11,9 +11,15 @@ export default {
   async scheduled(_event: ScheduledEvent, env: Bindings, ctx: ExecutionContext) {
     console.log('[Cron Worker] Starting daily Google Drive sync...');
     ctx.waitUntil(
-      syncAllClientsDriveFolders(env)
-        .then(() => console.log('[Cron Worker] Daily sync completed successfully'))
-        .catch((err) => console.error('[Cron Worker] Daily sync failed:', err))
+      (async () => {
+        // ステップ1: 全顧客の Drive フォルダから新規画像を高速取り込み（status='pending_ocr'）
+        const ingestedCount = await syncAllClientsDriveFolders(env);
+        console.log(`[Cron Worker] Ingested ${ingestedCount} new receipt images (pending_ocr)`);
+
+        // ステップ2: 取り込んだ画像（および過去の未処理分）を Gemini OCR で解析（status='unreviewed'へ）
+        const processedCount = await processAllPendingOcrReceipts(env, 50);
+        console.log(`[Cron Worker] Processed OCR for ${processedCount} receipts`);
+      })().catch((err) => console.error('[Cron Worker] Daily batch failed:', err))
     );
   },
 };

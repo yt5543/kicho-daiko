@@ -48,7 +48,7 @@ export interface Receipt {
   amount: number;
   payee: string;
   memo: string;
-  status: 'unreviewed' | 'approved';
+  status: 'pending_ocr' | 'unreviewed' | 'approved';
   created_at?: string;
   updated_at?: string;
   items: ReceiptItem[];
@@ -60,7 +60,7 @@ export interface UpdateReceiptRequest {
   amount: number;
   payee: string;
   memo?: string;
-  status?: 'unreviewed' | 'approved';
+  status?: 'pending_ocr' | 'unreviewed' | 'approved';
   items: {
     item_name: string;
     amount: number;

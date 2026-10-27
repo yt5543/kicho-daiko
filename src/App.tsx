@@ -25,6 +25,7 @@ interface EditableReceipt {
   amount: string;
   payee: string;
   memo: string;
+  status: 'pending_ocr' | 'unreviewed' | 'approved';
   items: EditableItem[];
 }
 
@@ -50,6 +51,7 @@ function mapReceiptToEditable(r: Receipt): EditableReceipt {
     amount: String(r.amount ?? 0),
     payee: r.payee ?? '',
     memo: r.memo ?? '',
+    status: r.status ?? 'unreviewed',
     items:
       r.items && r.items.length > 0
         ? r.items.map((item) => ({
@@ -91,6 +93,7 @@ export default function App() {
   const [driveFolderInput, setDriveFolderInput] = useState<string>('');
   const [savingFolder, setSavingFolder] = useState<boolean>(false);
   const [syncingDrive, setSyncingDrive] = useState<boolean>(false);
+  const [runningOcr, setRunningOcr] = useState<boolean>(false);
   const [infoMessage, setInfoMessage] = useState<string | null>(null);
 
   // 月指定エクスポート用（初期値: 2026-10）
@@ -354,7 +357,7 @@ export default function App() {
     }
   };
 
-  // Google Driveから新規レシートを今すぐ取り込むボタン処理
+  // Google Driveから新規レシート画像を今すぐ取り込むボタン処理（高速・OCRは別実行）
   const handleSyncDriveNow = async () => {
     if (!selectedClientId || syncingDrive) return;
     setSyncingDrive(true);
@@ -378,6 +381,7 @@ export default function App() {
       const data = (await res.json()) as {
         error?: string;
         message: string;
+        ingested_count?: number;
         receipts?: Receipt[];
       };
       if (!res.ok) {
@@ -395,15 +399,57 @@ export default function App() {
           focusReceiptImage(lastId);
           focusGridSection(lastId);
         }, 100);
+        setInfoMessage(
+          `${data.message}。「⚡ OCR解析を実行」を押すと明細を自動抽出できます。`
+        );
+      } else {
+        setInfoMessage(data.message);
       }
-
-      setInfoMessage(data.message);
     } catch (err) {
       setError(
         err instanceof Error ? err.message : 'Google Drive同期中にエラーが発生しました'
       );
     } finally {
       setSyncingDrive(false);
+    }
+  };
+
+  // 選択中顧客の OCR 未実行（pending_ocr）レシートを一括解析
+  const handleRunOcrBatch = async () => {
+    if (!selectedClientId || runningOcr) return;
+    setRunningOcr(true);
+    setError(null);
+    setInfoMessage(null);
+
+    try {
+      const res = await fetch(
+        `${API_BASE_URL}/api/clients/${selectedClientId}/run-ocr`,
+        { method: 'POST' }
+      );
+      const data = (await res.json()) as {
+        error?: string;
+        message: string;
+        processed_count?: number;
+      };
+
+      if (!res.ok) {
+        throw new Error(data.error || 'OCR解析に失敗しました');
+      }
+
+      // レシート一覧を再取得して最新の明細・金額を反映
+      const refreshedRes = await fetch(
+        `${API_BASE_URL}/api/clients/${selectedClientId}/receipts?status=unreviewed`
+      );
+      if (refreshedRes.ok) {
+        const refreshedData = (await refreshedRes.json()) as { receipts: Receipt[] };
+        setReceipts((refreshedData.receipts ?? []).map(mapReceiptToEditable));
+      }
+
+      setInfoMessage(data.message);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'OCR解析中にエラーが発生しました');
+    } finally {
+      setRunningOcr(false);
     }
   };
 
@@ -699,14 +745,18 @@ export default function App() {
   const stats = useMemo(() => {
     let totalItems = 0;
     let modifiedItems = 0;
+    let pendingOcrCount = 0;
 
     for (const r of receipts) {
+      if (r.status === 'pending_ocr') {
+        pendingOcrCount++;
+      }
       totalItems += r.items.length;
       const modCount = r.items.filter((i) => i.is_modified).length;
       modifiedItems += modCount;
     }
 
-    return { totalItems, modifiedItems };
+    return { totalItems, modifiedItems, pendingOcrCount };
   }, [receipts]);
 
   return (
@@ -794,6 +844,11 @@ export default function App() {
                   <span className="px-2.5 py-0.5 rounded-full font-medium bg-slate-100 text-slate-700">
                     未レビュー: <strong>{receipts.length}</strong> 枚 ({stats.totalItems} 行)
                   </span>
+                  {stats.pendingOcrCount > 0 && (
+                    <span className="px-2.5 py-0.5 rounded-full font-bold bg-amber-100 text-amber-900 border border-amber-300">
+                      ⚡ OCR待ち: <strong>{stats.pendingOcrCount}</strong> 枚
+                    </span>
+                  )}
                   <span className="px-2.5 py-0.5 rounded-full font-medium bg-amber-50 text-amber-800 border border-amber-200">
                     手修正済: <strong>{stats.modifiedItems}</strong> 行
                   </span>
@@ -876,15 +931,35 @@ export default function App() {
               </div>
 
               <div className="flex items-center gap-2 shrink-0">
-                {/* Google Driveから今すぐ取り込むボタン */}
+                {/* Google Driveから今すぐ画像を取り込むボタン */}
                 <button
                   type="button"
                   disabled={syncingDrive}
                   onClick={handleSyncDriveNow}
                   className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold text-emerald-800 bg-emerald-50 hover:bg-emerald-100 border border-emerald-300 disabled:opacity-50 transition-colors cursor-pointer"
+                  title="Google Driveから新規画像を高速取り込み（OCR解析待ちとして登録）"
                 >
                   <span>
-                    {syncingDrive ? 'Drive同期・OCR解析中...' : '🔄 Driveからレシート取込'}
+                    {syncingDrive ? 'Drive取込中...' : '🔄 Driveから画像取込'}
+                  </span>
+                </button>
+
+                {/* pending_ocr がある場合に表示するOCR解析実行ボタン */}
+                <button
+                  type="button"
+                  disabled={runningOcr || stats.pendingOcrCount === 0}
+                  onClick={handleRunOcrBatch}
+                  className={`inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                    stats.pendingOcrCount > 0
+                      ? 'text-white bg-amber-600 hover:bg-amber-700 shadow-xs'
+                      : 'text-slate-400 bg-slate-100 border border-slate-200 cursor-not-allowed opacity-60'
+                  }`}
+                  title="OCR解析待ちのレシート画像をGeminiで自動解析して明細を抽出"
+                >
+                  <span>
+                    {runningOcr
+                      ? '⚡ OCR解析中...'
+                      : `⚡ OCR解析を実行 (${stats.pendingOcrCount}件)`}
                   </span>
                 </button>
 
@@ -1027,11 +1102,15 @@ export default function App() {
                             </span>
                           </div>
                           <div className="flex items-center gap-2 shrink-0">
-                            {hasModified && (
+                            {receipt.status === 'pending_ocr' ? (
+                              <span className="px-2 py-0.5 rounded bg-amber-500 text-slate-900 text-[11px] font-bold">
+                                ⏳ OCR待ち
+                              </span>
+                            ) : hasModified ? (
                               <span className="px-2 py-0.5 rounded bg-amber-500/20 text-amber-300 text-[11px] font-semibold">
                                 ✎ 修正あり
                               </span>
-                            )}
+                            ) : null}
                             <a
                               href={receipt.image_url}
                               target="_blank"
@@ -1177,7 +1256,12 @@ export default function App() {
                                   <span className="text-[11px] text-slate-300 font-mono">
                                     (明細計: ¥{itemsTotal.toLocaleString()})
                                   </span>
-                                  {isDiff && (
+                                  {receipt.status === 'pending_ocr' && (
+                                    <span className="px-2 py-0.5 rounded bg-amber-500 text-slate-900 text-[11px] font-bold">
+                                      ⏳ OCR解析待ち
+                                    </span>
+                                  )}
+                                  {receipt.status !== 'pending_ocr' && isDiff && (
                                     <span className="px-1.5 py-0.5 rounded bg-red-500/20 text-red-300 text-[11px]">
                                       差額あり
                                     </span>

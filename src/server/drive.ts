@@ -1,4 +1,4 @@
-import type { Bindings, Client, OcrExtractedReceipt, Receipt } from '../types';
+import type { Bindings, Client, OcrExtractedReceipt, Receipt, ReceiptItem } from '../types';
 import { runOcrExtraction } from './ocr';
 
 // ファイル名を安全なR2キー用文字列に整形
@@ -41,23 +41,27 @@ function base64UrlEncodeBuffer(buffer: ArrayBuffer): string {
 }
 
 /**
- * Google サービスアカウントの秘密鍵(PEM)を使ってOAuth2アクセストークンを取得
+ * サービスアカウントの秘密鍵から JWT を生成し、Google OAuth2 トークンを取得
  */
 export async function getGoogleDriveAccessToken(
-  serviceAccountEmail: string,
+  clientEmail: string,
   privateKeyPem: string
 ): Promise<string> {
-  const pemContents = privateKeyPem
+  const pem = privateKeyPem
     .replace(/\\n/g, '\n')
-    .replace(/-----BEGIN PRIVATE KEY-----/g, '')
-    .replace(/-----END PRIVATE KEY-----/g, '')
+    .replace(/-----BEGIN PRIVATE KEY-----/, '')
+    .replace(/-----END PRIVATE KEY-----/, '')
     .replace(/\s+/g, '');
 
-  const binaryDer = base64ToUint8Array(pemContents);
+  const binaryDer = atob(pem);
+  const derBuffer = new Uint8Array(binaryDer.length);
+  for (let i = 0; i < binaryDer.length; i++) {
+    derBuffer[i] = binaryDer.charCodeAt(i);
+  }
 
   const cryptoKey = await crypto.subtle.importKey(
     'pkcs8',
-    binaryDer.buffer as ArrayBuffer,
+    derBuffer.buffer,
     {
       name: 'RSASSA-PKCS1-v1_5',
       hash: 'SHA-256',
@@ -66,14 +70,14 @@ export async function getGoogleDriveAccessToken(
     ['sign']
   );
 
-  const now = Math.floor(Date.now() / 1000);
+  const nowSec = Math.floor(Date.now() / 1000);
   const header = { alg: 'RS256', typ: 'JWT' };
   const payload = {
-    iss: serviceAccountEmail,
+    iss: clientEmail,
     scope: 'https://www.googleapis.com/auth/drive.readonly',
     aud: 'https://oauth2.googleapis.com/token',
-    iat: now,
-    exp: now + 3600,
+    exp: nowSec + 3600,
+    iat: nowSec,
   };
 
   const unsignedToken = `${base64UrlEncodeString(
@@ -107,9 +111,11 @@ export async function getGoogleDriveAccessToken(
 }
 
 /**
- * 1件のレシート画像を R2 に保存 → Gemini OCR実行 → D1 に status='unreviewed' で登録
+ * 【ステップ1: 画像取り込み】
+ * レシート画像を R2 に保存し、D1 に status='pending_ocr'（OCR解析待ち）として登録
+ * ※ Gemini OCR は呼び出さないため、数秒で爆速完了しタイムアウトしません
  */
-export async function ingestReceiptImageToR2AndD1(params: {
+export async function saveReceiptImageToR2AndD1Pending(params: {
   clientId: number;
   imageBuffer: ArrayBuffer | Uint8Array;
   mimeType: string;
@@ -138,26 +144,101 @@ export async function ingestReceiptImageToR2AndD1(params: {
   });
 
   const imageUrl = `/api/r2-images/${uniqueKey}`;
+  const today = new Date().toISOString().slice(0, 10);
 
-  // 2. Gemini APIでOCR実行（タイムアウトやエラー時はフォールバックして登録を継続）
+  // 2. D1データベースに status='pending_ocr' として保存
+  const insertReceiptRes = await env.DB.prepare(
+    `INSERT INTO receipts (client_id, drive_file_id, image_url, receipt_date, amount, payee, memo, status)
+     VALUES (?, ?, ?, ?, ?, ?, ?, 'pending_ocr')`
+  )
+    .bind(
+      clientId,
+      driveFileId,
+      imageUrl,
+      today,
+      0,
+      originalFileName,
+      'OCR解析待ち'
+    )
+    .run();
+
+  const newReceiptId = Number(insertReceiptRes.meta.last_row_id);
+
+  // 初期プレースホルダ明細行
+  await env.DB.prepare(
+    `INSERT INTO receipt_items
+     (receipt_id, line_number, item_name, amount, tax_rate, is_reduced_tax, is_modified)
+     VALUES (?, 1, ?, 0, 10, 0, 0)`
+  )
+    .bind(newReceiptId, '（OCR解析待ち）')
+    .run();
+
+  return {
+    id: newReceiptId,
+    client_id: clientId,
+    drive_file_id: driveFileId,
+    image_url: imageUrl,
+    receipt_date: today,
+    amount: 0,
+    payee: originalFileName,
+    memo: 'OCR解析待ち',
+    status: 'pending_ocr',
+    items: [
+      {
+        line_number: 1,
+        item_name: '（OCR解析待ち）',
+        amount: 0,
+        tax_rate: 10,
+        is_reduced_tax: 0,
+        is_modified: 0,
+      },
+    ],
+  };
+}
+
+/**
+ * 【ステップ2: 単一レシートのOCR解析実行】
+ * R2から画像を読み出して Gemini 3.8 Flash で解析し、D1 を更新して status='unreviewed' に変更
+ */
+export async function processSingleReceiptOcr(
+  receiptId: number,
+  env: Bindings
+): Promise<Receipt> {
+  const receipt = await env.DB.prepare(
+    `SELECT id, client_id, drive_file_id, image_url, receipt_date, amount, payee, memo, status
+     FROM receipts WHERE id = ?`
+  )
+    .bind(receiptId)
+    .first<Receipt>();
+
+  if (!receipt) {
+    throw new Error(`レシート #${receiptId} が見つかりません`);
+  }
+
+  // R2キーを image_url から抽出
+  const r2Key = receipt.image_url.replace(/^\/api\/r2-images\//, '');
+  const r2Object = await env.BUCKET.get(r2Key);
+  if (!r2Object) {
+    throw new Error(`R2に画像データが存在しません: ${r2Key}`);
+  }
+
+  const imageBuffer = await r2Object.arrayBuffer();
+  const mimeType = r2Object.httpMetadata?.contentType || 'image/jpeg';
+  const fileName = r2Key.split('/').pop() || 'receipt.jpg';
+
   let ocrResult: OcrExtractedReceipt;
   try {
-    ocrResult = await runOcrExtraction(
-      imageBuffer,
-      mimeType,
-      originalFileName,
-      env
-    );
+    ocrResult = await runOcrExtraction(imageBuffer, mimeType, fileName, env);
   } catch (ocrError) {
-    console.error(`OCR extraction failed for ${originalFileName}:`, ocrError);
+    console.error(`OCR extraction failed for receipt #${receiptId}:`, ocrError);
     const errMessage = ocrError instanceof Error ? ocrError.message : String(ocrError);
     const isTimeout = errMessage.includes('timeout') || errMessage.includes('aborted');
     const today = new Date().toISOString().slice(0, 10);
     ocrResult = {
-      receipt_date: today,
-      payee: '（要確認：解析失敗）',
+      receipt_date: receipt.receipt_date || today,
+      payee: receipt.payee || '（要確認：解析失敗）',
       amount: 0,
-      memo: `※ 自動解析${isTimeout ? 'タイムアウト(90秒超過)' : '失敗'}。画像を確認して日付・店名・金額を入力してください。`,
+      memo: `※ 自動解析${isTimeout ? 'タイムアウト(90秒超過)' : '失敗'}。画像を確認して手入力してください。`,
       items: [
         {
           item_name: '（品名・金額を手入力）',
@@ -169,32 +250,38 @@ export async function ingestReceiptImageToR2AndD1(params: {
     };
   }
 
-  // 3. D1データベースに status='unreviewed' として保存
-  const insertReceiptRes = await env.DB.prepare(
-    `INSERT INTO receipts (client_id, drive_file_id, image_url, receipt_date, amount, payee, memo, status)
-     VALUES (?, ?, ?, ?, ?, ?, ?, 'unreviewed')`
+  // receipts テーブルの更新 (status を 'unreviewed' に昇格)
+  await env.DB.prepare(
+    `UPDATE receipts
+     SET receipt_date = ?,
+         amount = ?,
+         payee = ?,
+         memo = ?,
+         status = 'unreviewed',
+         updated_at = datetime('now')
+     WHERE id = ?`
   )
     .bind(
-      clientId,
-      driveFileId,
-      imageUrl,
       ocrResult.receipt_date,
       Math.trunc(ocrResult.amount),
       ocrResult.payee,
-      ocrResult.memo ?? ''
+      ocrResult.memo ?? '',
+      receiptId
     )
     .run();
 
-  const newReceiptId = Number(insertReceiptRes.meta.last_row_id);
+  // 既存のプレースホルダ明細を削除し、OCR抽出明細行を保存
+  await env.DB.prepare('DELETE FROM receipt_items WHERE receipt_id = ?')
+    .bind(receiptId)
+    .run();
 
-  // 明細行の保存
   const itemStatements: D1PreparedStatement[] = ocrResult.items.map((item, idx) =>
     env.DB.prepare(
       `INSERT INTO receipt_items
        (receipt_id, line_number, item_name, amount, tax_rate, is_reduced_tax, is_modified)
        VALUES (?, ?, ?, ?, ?, ?, 0)`
     ).bind(
-      newReceiptId,
+      receiptId,
       idx + 1,
       item.item_name,
       Math.trunc(item.amount),
@@ -208,10 +295,10 @@ export async function ingestReceiptImageToR2AndD1(params: {
   }
 
   return {
-    id: newReceiptId,
-    client_id: clientId,
-    drive_file_id: driveFileId,
-    image_url: imageUrl,
+    id: receiptId,
+    client_id: receipt.client_id,
+    drive_file_id: receipt.drive_file_id,
+    image_url: receipt.image_url,
     receipt_date: ocrResult.receipt_date,
     amount: ocrResult.amount,
     payee: ocrResult.payee,
@@ -226,7 +313,61 @@ export async function ingestReceiptImageToR2AndD1(params: {
 }
 
 /**
- * 特定顧客の Google Drive フォルダを巡回し、未取り込みのレシート画像を取り込む
+ * 特定顧客の pending_ocr レシートを一括で OCR 解析
+ */
+export async function processPendingOcrForClient(
+  clientId: number,
+  env: Bindings,
+  limit = 20
+): Promise<{ processed: number; receipts: Receipt[] }> {
+  const { results: pendingReceipts } = await env.DB.prepare(
+    `SELECT id FROM receipts WHERE client_id = ? AND status = 'pending_ocr' ORDER BY id ASC LIMIT ?`
+  )
+    .bind(clientId, limit)
+    .all<{ id: number }>();
+
+  const receipts: Receipt[] = [];
+  for (const r of pendingReceipts) {
+    try {
+      const processed = await processSingleReceiptOcr(r.id, env);
+      receipts.push(processed);
+    } catch (err) {
+      console.error(`Failed to process OCR for receipt #${r.id}:`, err);
+    }
+  }
+
+  return { processed: receipts.length, receipts };
+}
+
+/**
+ * 全顧客の pending_ocr レシートを順次 OCR 解析（Cron定期実行用）
+ */
+export async function processAllPendingOcrReceipts(
+  env: Bindings,
+  limit = 30
+): Promise<number> {
+  const { results: pendingReceipts } = await env.DB.prepare(
+    `SELECT id FROM receipts WHERE status = 'pending_ocr' ORDER BY id ASC LIMIT ?`
+  )
+    .bind(limit)
+    .all<{ id: number }>();
+
+  let processedCount = 0;
+  for (const r of pendingReceipts) {
+    try {
+      await processSingleReceiptOcr(r.id, env);
+      processedCount++;
+    } catch (err) {
+      console.error(`Cron OCR failed for receipt #${r.id}:`, err);
+    }
+  }
+
+  return processedCount;
+}
+
+/**
+ * 特定顧客の Google Drive フォルダを巡回し、新規レシート画像をR2/D1に取り込む
+ * （※ OCRは実行せず status='pending_ocr' として即時登録するため超高速）
  */
 export async function syncClientDriveFolder(
   client: Client,
@@ -274,7 +415,7 @@ export async function syncClientDriveFolder(
 
   const ingestedReceipts: Receipt[] = [];
 
-  // 3. 新規ファイルを1件ずつダウンロード → R2保存 → Gemini OCR → D1保存
+  // 3. 新規ファイルを1件ずつダウンロード → R2保存 → D1に pending_ocr で保存
   for (const file of newFiles) {
     const downloadUrl = `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(
       file.id
@@ -289,7 +430,7 @@ export async function syncClientDriveFolder(
     }
 
     const imageBuffer = await fileRes.arrayBuffer();
-    const receipt = await ingestReceiptImageToR2AndD1({
+    const receipt = await saveReceiptImageToR2AndD1Pending({
       clientId: client.id,
       imageBuffer,
       mimeType: file.mimeType || 'image/jpeg',
@@ -340,4 +481,3 @@ export async function syncAllClientsDriveFolders(env: Bindings): Promise<number>
 
   return totalIngested;
 }
-

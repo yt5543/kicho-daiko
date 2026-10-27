@@ -13,7 +13,9 @@ import {
   base64ToUint8Array,
   extractDriveFolderId,
   getGoogleDriveAccessToken,
-  ingestReceiptImageToR2AndD1,
+  processPendingOcrForClient,
+  processSingleReceiptOcr,
+  saveReceiptImageToR2AndD1Pending,
   syncAllClientsDriveFolders,
   syncClientDriveFolder,
 } from './drive';
@@ -246,7 +248,7 @@ app.post('/api/clients/:clientId/sync-drive', async (c) => {
     return c.json({
       message:
         ingestedReceipts.length > 0
-          ? `Google Driveから ${ingestedReceipts.length} 枚のレシートを取り込みました`
+          ? `Google Driveから ${ingestedReceipts.length} 枚の画像を取り込みました（OCR解析待ち）`
           : 'Google Driveに未取り込みの新規レシート画像はありませんでした',
       ingested_count: ingestedReceipts.length,
       receipts: ingestedReceipts,
@@ -259,6 +261,40 @@ app.post('/api/clients/:clientId/sync-drive', async (c) => {
           error instanceof Error
             ? error.message
             : 'Google Driveからの取り込みに失敗しました',
+      },
+      500
+    );
+  }
+});
+
+/**
+ * POST /api/clients/:clientId/run-ocr
+ * OCR未実行（pending_ocr）のレシートを一括でGemini OCR解析
+ */
+app.post('/api/clients/:clientId/run-ocr', async (c) => {
+  const clientId = Number(c.req.param('clientId'));
+  if (Number.isNaN(clientId)) {
+    return c.json({ error: '不正な clientId です' }, 400);
+  }
+
+  try {
+    const result = await processPendingOcrForClient(clientId, c.env, 20);
+    return c.json({
+      message:
+        result.processed > 0
+          ? `${result.processed} 枚のレシートをOCR解析しました`
+          : 'OCR解析待ちのレシートはありません',
+      processed_count: result.processed,
+      receipts: result.receipts,
+    });
+  } catch (error) {
+    console.error('Failed to run OCR batch:', error);
+    return c.json(
+      {
+        error:
+          error instanceof Error
+            ? error.message
+            : 'OCR解析の実行中にエラーが発生しました',
       },
       500
     );
@@ -316,7 +352,8 @@ app.post('/api/clients/:clientId/receipts/ingest', async (c) => {
       );
     }
 
-    const receipt = await ingestReceiptImageToR2AndD1({
+    // 1. R2/D1に pending_ocr として保存
+    const pendingReceipt = await saveReceiptImageToR2AndD1Pending({
       clientId,
       imageBuffer,
       mimeType,
@@ -324,8 +361,11 @@ app.post('/api/clients/:clientId/receipts/ingest', async (c) => {
       env: c.env,
     });
 
+    // 2. そのまま即時OCRを実行
+    const receipt = await processSingleReceiptOcr(pendingReceipt.id, c.env);
+
     return c.json({
-      message: 'レシート画像をR2に保存し、Gemini OCRで解析して登録しました',
+      message: 'レシート画像を保存し、Gemini OCRで解析して登録しました',
       receipt,
     });
   } catch (error) {
@@ -372,13 +412,21 @@ app.get('/api/clients/:clientId/receipts', async (c) => {
   const status = c.req.query('status') ?? 'unreviewed';
 
   try {
+    const isUnreviewedQuery = status === 'unreviewed';
+    const statusCondition = isUnreviewedQuery
+      ? `status IN ('pending_ocr', 'unreviewed')`
+      : `status = ?`;
+    const bindParams: (string | number)[] = isUnreviewedQuery
+      ? [clientId]
+      : [clientId, status];
+
     const { results: receiptRows } = await c.env.DB.prepare(
       `SELECT id, client_id, drive_file_id, image_url, receipt_date, amount, payee, memo, status, created_at, updated_at
        FROM receipts
-       WHERE client_id = ? AND status = ?
+       WHERE client_id = ? AND ${statusCondition}
        ORDER BY id ASC`
     )
-      .bind(clientId, status)
+      .bind(...bindParams)
       .all<Omit<Receipt, 'items'>>();
 
     if (receiptRows.length === 0) {
@@ -389,10 +437,10 @@ app.get('/api/clients/:clientId/receipts', async (c) => {
       `SELECT ri.id, ri.receipt_id, ri.line_number, ri.item_name, ri.amount, ri.tax_rate, ri.is_reduced_tax, ri.is_modified
        FROM receipt_items ri
        INNER JOIN receipts r ON r.id = ri.receipt_id
-       WHERE r.client_id = ? AND r.status = ?
+       WHERE r.client_id = ? AND r.${statusCondition}
        ORDER BY ri.receipt_id ASC, ri.line_number ASC, ri.id ASC`
     )
-      .bind(clientId, status)
+      .bind(...bindParams)
       .all<ReceiptItem>();
 
     const itemsByReceiptId = new Map<number, ReceiptItem[]>();
