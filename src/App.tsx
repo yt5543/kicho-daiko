@@ -80,6 +80,13 @@ export default function App() {
   const [receipts, setReceipts] = useState<EditableReceipt[]>([]);
   const [activeReceiptId, setActiveReceiptId] = useState<number | null>(null);
 
+  // 顧客の新規作成・編集モーダル用
+  const [showClientModal, setShowClientModal] = useState<boolean>(false);
+  const [clientModalMode, setClientModalMode] = useState<'create' | 'edit'>('create');
+  const [clientNameInput, setClientNameInput] = useState<string>('');
+  const [clientFolderInput, setClientFolderInput] = useState<string>('');
+  const [submittingClient, setSubmittingClient] = useState<boolean>(false);
+
   // Google Drive フォルダ設定＆同期用
   const [driveFolderInput, setDriveFolderInput] = useState<string>('');
   const [savingFolder, setSavingFolder] = useState<boolean>(false);
@@ -183,6 +190,113 @@ export default function App() {
 
     fetchReceipts();
   }, [selectedClientId]);
+
+  // 顧客の新規作成モーダルを開く
+  const handleOpenCreateClientModal = () => {
+    setClientModalMode('create');
+    setClientNameInput('');
+    setClientFolderInput('');
+    setShowClientModal(true);
+  };
+
+  // 顧客の編集モーダルを開く
+  const handleOpenEditClientModal = (client: Client, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setClientModalMode('edit');
+    setClientNameInput(client.name);
+    setClientFolderInput(client.drive_folder_id ?? '');
+    setShowClientModal(true);
+  };
+
+  // 顧客の保存（新規登録または編集）
+  const handleSaveClient = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!clientNameInput.trim() || submittingClient) return;
+
+    setSubmittingClient(true);
+    setError(null);
+
+    try {
+      if (clientModalMode === 'create') {
+        const res = await fetch(`${API_BASE_URL}/api/clients`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name: clientNameInput.trim(),
+            drive_folder_id: clientFolderInput.trim(),
+          }),
+        });
+        const data = (await res.json()) as { error?: string; client: Client };
+        if (!res.ok) throw new Error(data.error || '顧客の登録に失敗しました');
+
+        setClients((prev) => [...prev, data.client]);
+        setSelectedClientId(data.client.id);
+        setDriveFolderInput(data.client.drive_folder_id ?? '');
+        setInfoMessage(`顧客「${data.client.name}」を登録しました`);
+      } else {
+        if (!selectedClientId) return;
+        const res = await fetch(`${API_BASE_URL}/api/clients/${selectedClientId}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name: clientNameInput.trim(),
+            drive_folder_id: clientFolderInput.trim(),
+          }),
+        });
+        const data = (await res.json()) as { error?: string };
+        if (!res.ok) throw new Error(data.error || '顧客情報の更新に失敗しました');
+
+        setClients((prev) =>
+          prev.map((c) =>
+            c.id === selectedClientId
+              ? {
+                  ...c,
+                  name: clientNameInput.trim(),
+                  drive_folder_id: clientFolderInput.trim(),
+                }
+              : c
+          )
+        );
+        setDriveFolderInput(clientFolderInput.trim());
+        setInfoMessage(`顧客情報を更新しました`);
+      }
+
+      setShowClientModal(false);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '処理中にエラーが発生しました');
+    } finally {
+      setSubmittingClient(false);
+    }
+  };
+
+  // 顧客の削除
+  const handleDeleteClient = async (client: Client, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (
+      !window.confirm(
+        `顧客「${client.name}」を削除してもよろしいですか？\n※紐づくレシートと明細データもすべて削除されます。`
+      )
+    ) {
+      return;
+    }
+
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/clients/${client.id}`, {
+        method: 'DELETE',
+      });
+      const data = (await res.json()) as { error?: string };
+      if (!res.ok) throw new Error(data.error || '顧客の削除に失敗しました');
+
+      const nextClients = clients.filter((c) => c.id !== client.id);
+      setClients(nextClients);
+      if (selectedClientId === client.id) {
+        setSelectedClientId(nextClients[0]?.id ?? null);
+      }
+      setInfoMessage(`顧客「${client.name}」を削除しました`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '削除中にエラーが発生しました');
+    }
+  };
 
   // グリッド側でレシートを選択した際、左カラムのレシート画像をスクロール表示
   const focusReceiptImage = (receiptId: number) => {
@@ -566,30 +680,58 @@ export default function App() {
           <p className="text-[11px] text-slate-400 mt-0.5">Drive自動取込＆グリッド確認</p>
         </div>
 
-        <div className="px-3 py-2.5 text-[11px] font-semibold uppercase tracking-wider text-slate-400">
-          顧客一覧 ({clients.length})
+        <div className="px-3 py-2.5 text-[11px] font-semibold uppercase tracking-wider text-slate-400 flex items-center justify-between">
+          <span>顧客一覧 ({clients.length})</span>
+          <button
+            type="button"
+            onClick={handleOpenCreateClientModal}
+            className="text-[11px] text-indigo-400 hover:text-indigo-300 font-bold flex items-center gap-0.5 cursor-pointer px-1 py-0.5 rounded hover:bg-slate-800 transition-colors"
+          >
+            ＋ 追加
+          </button>
         </div>
 
         <nav className="flex-1 overflow-y-auto px-2 space-y-1">
           {loadingClients ? (
             <div className="px-3 py-4 text-xs text-slate-400">読み込み中...</div>
+          ) : clients.length === 0 ? (
+            <div className="px-3 py-4 text-xs text-slate-400 text-center">
+              顧客が登録されていません。<br />上の「＋ 追加」から登録してください。
+            </div>
           ) : (
             clients.map((client) => {
               const isSelected = client.id === selectedClientId;
               return (
-                <button
+                <div
                   key={client.id}
-                  type="button"
                   onClick={() => setSelectedClientId(client.id)}
-                  className={`w-full text-left px-3 py-2 rounded-lg text-xs font-medium transition-colors flex items-center justify-between ${
+                  className={`group w-full text-left px-3 py-2 rounded-lg text-xs font-medium transition-colors flex items-center justify-between cursor-pointer ${
                     isSelected
                       ? 'bg-indigo-600 text-white shadow-xs'
                       : 'text-slate-300 hover:bg-slate-800 hover:text-white'
                   }`}
                 >
-                  <span className="truncate">{client.name}</span>
-                  <span className="text-[10px] opacity-70">#{client.id}</span>
-                </button>
+                  <span className="truncate flex-1 mr-1">{client.name}</span>
+                  <div className="flex items-center gap-1 shrink-0">
+                    <span className="text-[10px] opacity-60">#{client.id}</span>
+                    <button
+                      type="button"
+                      title="顧客情報を編集"
+                      onClick={(e) => handleOpenEditClientModal(client, e)}
+                      className="opacity-0 group-hover:opacity-100 hover:text-amber-300 text-[10px] p-0.5 rounded transition-opacity"
+                    >
+                      ✎
+                    </button>
+                    <button
+                      type="button"
+                      title="顧客を削除"
+                      onClick={(e) => handleDeleteClient(client, e)}
+                      className="opacity-0 group-hover:opacity-100 hover:text-red-300 text-[10px] p-0.5 rounded transition-opacity"
+                    >
+                      ✕
+                    </button>
+                  </div>
+                </div>
               );
             })
           )}
@@ -1190,6 +1332,83 @@ export default function App() {
           )}
         </div>
       </main>
+
+      {/* 顧客追加・編集モーダル */}
+      {showClientModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-xs p-4">
+          <div className="bg-white rounded-xl shadow-xl border border-slate-200 max-w-md w-full overflow-hidden animate-in fade-in zoom-in-95 duration-150">
+            <div className="px-5 py-4 bg-slate-900 text-white flex items-center justify-between">
+              <h3 className="text-sm font-bold">
+                {clientModalMode === 'create' ? '新規顧客の登録' : '顧客情報の編集'}
+              </h3>
+              <button
+                type="button"
+                onClick={() => setShowClientModal(false)}
+                className="text-slate-400 hover:text-white text-base leading-none"
+              >
+                ✕
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveClient} className="p-5 space-y-4">
+              <div>
+                <label
+                  htmlFor="modal_client_name"
+                  className="block text-xs font-semibold text-slate-700 mb-1"
+                >
+                  顧客名 / 企業名 <span className="text-red-500">*</span>
+                </label>
+                <input
+                  id="modal_client_name"
+                  type="text"
+                  required
+                  placeholder="例: 株式会社ABC商事"
+                  value={clientNameInput}
+                  onChange={(e) => setClientNameInput(e.target.value)}
+                  className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-900 focus:outline-none focus:border-indigo-600 focus:ring-2 focus:ring-indigo-600/20"
+                />
+              </div>
+
+              <div>
+                <label
+                  htmlFor="modal_client_folder"
+                  className="block text-xs font-semibold text-slate-700 mb-1"
+                >
+                  Google Drive フォルダURLまたはID (任意)
+                </label>
+                <input
+                  id="modal_client_folder"
+                  type="text"
+                  placeholder="例: https://drive.google.com/drive/folders/xxxx"
+                  value={clientFolderInput}
+                  onChange={(e) => setClientFolderInput(e.target.value)}
+                  className="w-full rounded-lg border border-slate-300 px-3 py-2 text-xs font-mono text-slate-800 focus:outline-none focus:border-indigo-600"
+                />
+                <p className="text-[11px] text-slate-500 mt-1">
+                  レシート画像を入れるGoogle DriveフォルダのURLを貼り付けます（後からでも設定可能）
+                </p>
+              </div>
+
+              <div className="pt-3 border-t border-slate-100 flex items-center justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setShowClientModal(false)}
+                  className="px-3.5 py-1.5 rounded-lg border border-slate-300 text-xs font-medium text-slate-600 hover:bg-slate-50 transition-colors"
+                >
+                  キャンセル
+                </button>
+                <button
+                  type="submit"
+                  disabled={submittingClient || !clientNameInput.trim()}
+                  className="px-4 py-1.5 rounded-lg text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 transition-colors shadow-xs"
+                >
+                  {submittingClient ? '保存中...' : '登録する'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

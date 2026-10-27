@@ -74,6 +74,102 @@ app.get('/api/clients', async (c) => {
 });
 
 /**
+ * POST /api/clients
+ * 顧客を新規追加
+ */
+app.post('/api/clients', async (c) => {
+  try {
+    const body = await c.req.json<{ name?: string; drive_folder_id?: string }>();
+    const name = body.name?.trim();
+    if (!name) {
+      return c.json({ error: '顧客名を入力してください' }, 400);
+    }
+
+    const folderId = extractDriveFolderId(body.drive_folder_id ?? '');
+
+    const res = await c.env.DB.prepare(
+      'INSERT INTO clients (name, drive_folder_id) VALUES (?, ?)'
+    )
+      .bind(name, folderId)
+      .run();
+
+    const newId = Number(res.meta.last_row_id);
+    const newClient = await c.env.DB.prepare(
+      'SELECT id, name, drive_folder_id, created_at FROM clients WHERE id = ?'
+    )
+      .bind(newId)
+      .first<Client>();
+
+    return c.json({
+      message: '顧客を登録しました',
+      client: newClient,
+    });
+  } catch (error) {
+    console.error('Failed to create client:', error);
+    return c.json({ error: '顧客の登録に失敗しました' }, 500);
+  }
+});
+
+/**
+ * PUT /api/clients/:clientId
+ * 顧客情報（名前・フォルダID）を更新
+ */
+app.put('/api/clients/:clientId', async (c) => {
+  const clientId = Number(c.req.param('clientId'));
+  if (Number.isNaN(clientId)) {
+    return c.json({ error: '不正な clientId です' }, 400);
+  }
+
+  try {
+    const body = await c.req.json<{ name?: string; drive_folder_id?: string }>();
+    const name = body.name?.trim();
+    if (!name) {
+      return c.json({ error: '顧客名を入力してください' }, 400);
+    }
+
+    const folderId = extractDriveFolderId(body.drive_folder_id ?? '');
+
+    await c.env.DB.prepare(
+      'UPDATE clients SET name = ?, drive_folder_id = ? WHERE id = ?'
+    )
+      .bind(name, folderId, clientId)
+      .run();
+
+    return c.json({ message: '顧客情報を更新しました' });
+  } catch (error) {
+    console.error('Failed to update client:', error);
+    return c.json({ error: '顧客情報の更新に失敗しました' }, 500);
+  }
+});
+
+/**
+ * DELETE /api/clients/:clientId
+ * 顧客を削除（紐づくレシートも自動削除）
+ */
+app.delete('/api/clients/:clientId', async (c) => {
+  const clientId = Number(c.req.param('clientId'));
+  if (Number.isNaN(clientId)) {
+    return c.json({ error: '不正な clientId です' }, 400);
+  }
+
+  try {
+    // 顧客削除（schema.sql の ON DELETE CASCADE により receipts, receipt_items も連鎖削除）
+    const res = await c.env.DB.prepare('DELETE FROM clients WHERE id = ?')
+      .bind(clientId)
+      .run();
+
+    if (res.meta.changes === 0) {
+      return c.json({ error: '対象の顧客が見つかりません' }, 404);
+    }
+
+    return c.json({ message: '顧客を削除しました' });
+  } catch (error) {
+    console.error('Failed to delete client:', error);
+    return c.json({ error: '顧客の削除に失敗しました' }, 500);
+  }
+});
+
+/**
  * PUT /api/clients/:clientId/drive-folder
  * 顧客ごとのGoogle DriveフォルダID（またはURL）を保存
  */
