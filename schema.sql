@@ -65,15 +65,9 @@ CREATE INDEX idx_receipts_client_date ON receipts(client_id, receipt_date);
 CREATE INDEX idx_receipts_drive_file_id ON receipts(client_id, drive_file_id);
 CREATE INDEX idx_receipt_items_receipt_id ON receipt_items(receipt_id, line_number);
 
--- 初期データ: 税率マスタ
+-- 初期データ: 税率マスタ（システム標準値）
 INSERT INTO tax_rates (rate, name, is_reduced, is_active, sort_order) VALUES
   (10, '10% (標準)', 0, 1, 10),
   (8,  '8% (軽減※)', 1, 1, 20),
   (1,  '1% (軽減※)', 1, 1, 30),
   (0,  '0% (非課税)', 0, 1, 40);
-
--- 初期データ: 顧客
-INSERT INTO clients (name, drive_folder_id) VALUES
-  ('株式会社サンプル商事', ''),
-  ('合同会社テックラボ', ''),
-  ('鈴木税理士事務所', '');
