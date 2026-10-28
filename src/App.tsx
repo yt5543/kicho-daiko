@@ -117,10 +117,24 @@ export default function App() {
   const [submittingIds, setSubmittingIds] = useState<Set<number>>(new Set());
   const [error, setError] = useState<string | null>(null);
 
-  // 🔍 集中拡大レビューモード用 State
+  // 🔍 集中拡大レビューモード用 State (ホイールズーム ＆ ドラッグ移動対応)
   const [focusReceiptId, setFocusReceiptId] = useState<number | null>(null);
   const [focusZoom, setFocusZoom] = useState<number>(1.0);
   const [focusRotation, setFocusRotation] = useState<number>(0);
+  const [focusPan, setFocusPan] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
+  const [isDraggingImage, setIsDraggingImage] = useState<boolean>(false);
+  const dragStartRef = useRef<{ x: number; y: number; panX: number; panY: number }>({
+    x: 0,
+    y: 0,
+    panX: 0,
+    panY: 0,
+  });
+
+  const resetFocusView = () => {
+    setFocusZoom(1.0);
+    setFocusRotation(0);
+    setFocusPan({ x: 0, y: 0 });
+  };
 
   // 集中拡大モードでEscキー押下時に閉じる
   useEffect(() => {
@@ -1165,8 +1179,7 @@ export default function App() {
                               onClick={(e) => {
                                 e.stopPropagation();
                                 setFocusReceiptId(receipt.id);
-                                setFocusZoom(1.0);
-                                setFocusRotation(0);
+                                resetFocusView();
                               }}
                               className="px-2 py-0.5 rounded bg-indigo-600 hover:bg-indigo-500 text-white text-[11px] font-bold cursor-pointer transition-colors flex items-center gap-0.5 shadow-2xs"
                               title="サイドバーを隠して大画面で画像とグリッドを並べて集中確認"
@@ -1591,8 +1604,7 @@ export default function App() {
                     const idx = receipts.findIndex((r) => r.id === focusReceipt.id);
                     if (idx > 0) {
                       setFocusReceiptId(receipts[idx - 1].id);
-                      setFocusZoom(1.0);
-                      setFocusRotation(0);
+                      resetFocusView();
                     }
                   }}
                   className="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 disabled:opacity-30 text-xs font-bold cursor-pointer transition-colors"
@@ -1610,8 +1622,7 @@ export default function App() {
                     const idx = receipts.findIndex((r) => r.id === focusReceipt.id);
                     if (idx < receipts.length - 1) {
                       setFocusReceiptId(receipts[idx + 1].id);
-                      setFocusZoom(1.0);
-                      setFocusRotation(0);
+                      resetFocusView();
                     }
                   }}
                   className="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 disabled:opacity-30 text-xs font-bold cursor-pointer transition-colors"
@@ -1622,9 +1633,38 @@ export default function App() {
               </div>
             </div>
 
-            {/* 中央: ズーム & 回転ツール */}
+            {/* 中央: ズーム & 表示切替ツール */}
             <div className="flex items-center gap-1.5 bg-slate-800/90 px-3 py-1 rounded-lg border border-slate-700 text-xs">
-              <span className="text-slate-400 mr-1 text-[11px]">画像ズーム:</span>
+              <button
+                type="button"
+                onClick={resetFocusView}
+                className={`px-2.5 py-1 rounded text-xs font-medium cursor-pointer transition-colors ${
+                  focusZoom === 1.0 && focusPan.x === 0 && focusPan.y === 0
+                    ? 'bg-indigo-600 text-white shadow-sm'
+                    : 'bg-slate-700 hover:bg-slate-600 text-slate-200'
+                }`}
+                title="初期位置・全体表示にリセットします"
+              >
+                ↕ 全体表示リセット
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setFocusZoom(1.8);
+                  setFocusPan({ x: 0, y: 120 });
+                }}
+                className={`px-2.5 py-1 rounded text-xs font-medium cursor-pointer transition-colors ${
+                  focusZoom >= 1.7 && focusZoom <= 1.9
+                    ? 'bg-indigo-600 text-white shadow-sm'
+                    : 'bg-slate-700 hover:bg-slate-600 text-slate-200'
+                }`}
+                title="文字を大きく拡大してレシート上部を表示します"
+              >
+                🔍 文字大 (180%)
+              </button>
+
+              <div className="h-4 w-px bg-slate-600 mx-1" />
+
               <button
                 type="button"
                 onClick={() => setFocusZoom((z) => Math.max(0.4, Number((z - 0.2).toFixed(1))))}
@@ -1638,27 +1678,19 @@ export default function App() {
               </span>
               <button
                 type="button"
-                onClick={() => setFocusZoom((z) => Math.min(3.5, Number((z + 0.2).toFixed(1))))}
+                onClick={() => setFocusZoom((z) => Math.min(4.0, Number((z + 0.2).toFixed(1))))}
                 className="w-6 h-6 rounded bg-slate-700 hover:bg-slate-600 flex items-center justify-center font-bold text-slate-200 cursor-pointer"
                 title="拡大"
               >
                 ＋
               </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setFocusZoom(1.0);
-                  setFocusRotation(0);
-                }}
-                className="px-2 py-0.5 rounded bg-slate-700 hover:bg-slate-600 text-[11px] text-slate-300 cursor-pointer ml-1"
-                title="等倍にリセット"
-              >
-                100%
-              </button>
+
+              <div className="h-4 w-px bg-slate-600 mx-1" />
+
               <button
                 type="button"
                 onClick={() => setFocusRotation((r) => (r + 90) % 360)}
-                className="px-2 py-0.5 rounded bg-slate-700 hover:bg-slate-600 text-[11px] text-slate-300 cursor-pointer ml-1 flex items-center gap-0.5"
+                className="px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 text-xs text-slate-200 cursor-pointer ml-1 flex items-center gap-1"
                 title="時計回りに90°回転"
               >
                 ⟳ 回転
@@ -1678,8 +1710,7 @@ export default function App() {
                         ? receipts[currentIdx + 1]
                         : receipts[currentIdx - 1];
                     setFocusReceiptId(nextReceipt.id);
-                    setFocusZoom(1.0);
-                    setFocusRotation(0);
+                    resetFocusView();
                   } else {
                     setFocusReceiptId(null);
                   }
@@ -1702,34 +1733,70 @@ export default function App() {
 
           {/* メイン 2分割エリア */}
           <div className="flex-1 flex overflow-hidden">
-            {/* 左半分 (58%): 特大レシート画像ビューア（ズーム・ホイール対応） */}
+            {/* 左半分 (58%): 特大レシート画像ビューア（ホイール拡大縮小 ＆ ドラッグ移動） */}
             <div
-              className="w-[58%] h-full bg-slate-950 border-r border-slate-800 flex items-center justify-center p-6 overflow-auto select-none relative"
+              className={`w-[58%] h-full bg-slate-950 border-r border-slate-800 flex items-center justify-center p-6 overflow-hidden select-none relative ${
+                isDraggingImage ? 'cursor-grabbing' : 'cursor-grab'
+              }`}
               onWheel={(e) => {
                 e.preventDefault();
-                if (e.deltaY < 0) {
-                  setFocusZoom((z) => Math.min(3.5, Number((z + 0.15).toFixed(2))));
+                const delta = e.deltaY < 0 ? 0.18 : -0.18;
+                setFocusZoom((z) => Math.min(4.0, Math.max(0.4, Number((z + delta).toFixed(2)))));
+              }}
+              onMouseDown={(e) => {
+                if (e.button !== 0) return;
+                e.preventDefault();
+                setIsDraggingImage(true);
+                dragStartRef.current = {
+                  x: e.clientX,
+                  y: e.clientY,
+                  panX: focusPan.x,
+                  panY: focusPan.y,
+                };
+              }}
+              onMouseMove={(e) => {
+                if (!isDraggingImage) return;
+                const dx = e.clientX - dragStartRef.current.x;
+                const dy = e.clientY - dragStartRef.current.y;
+                setFocusPan({
+                  x: dragStartRef.current.panX + dx,
+                  y: dragStartRef.current.panY + dy,
+                });
+              }}
+              onMouseUp={() => setIsDraggingImage(false)}
+              onMouseLeave={() => setIsDraggingImage(false)}
+              onDoubleClick={() => {
+                if (focusZoom === 1.0 && focusPan.x === 0 && focusPan.y === 0) {
+                  setFocusZoom(1.8);
+                  setFocusPan({ x: 0, y: 120 });
                 } else {
-                  setFocusZoom((z) => Math.max(0.4, Number((z - 0.15).toFixed(2))));
+                  resetFocusView();
                 }
               }}
             >
               <div
-                className="transition-transform duration-100 ease-out flex items-center justify-center"
+                className={`flex items-center justify-center ${
+                  isDraggingImage ? '' : 'transition-transform duration-100 ease-out'
+                }`}
                 style={{
-                  transform: `scale(${focusZoom}) rotate(${focusRotation}deg)`,
+                  transform: `translate(${focusPan.x}px, ${focusPan.y}px) scale(${focusZoom}) rotate(${focusRotation}deg)`,
                 }}
               >
                 <img
                   src={focusReceipt.image_url}
                   alt={`Receipt #${focusReceipt.id}`}
-                  className="max-h-[85vh] max-w-full object-contain rounded-lg shadow-2xl pointer-events-none"
+                  draggable={false}
+                  className="max-h-[85vh] max-w-full object-contain rounded-lg shadow-2xl pointer-events-none select-none"
                 />
               </div>
 
-              {/* ヒント */}
-              <div className="absolute bottom-3 left-4 text-[11px] text-slate-400 bg-slate-900/90 border border-slate-800 px-2.5 py-1 rounded-md backdrop-blur pointer-events-none">
-                💡 マウスホイールでズームイン・ズームアウト / 画面上で画像を確認しながら右で入力
+              {/* ヒント案内 */}
+              <div className="absolute bottom-3 left-4 text-[11px] text-slate-300 bg-slate-900/90 border border-slate-700/80 px-3 py-1.5 rounded-md backdrop-blur shadow-lg pointer-events-none flex items-center gap-2.5">
+                <span>🖱️ <b>ホイール</b>: 拡大・縮小</span>
+                <span className="text-slate-600">|</span>
+                <span>✋ <b>ドラッグ</b>: 掴んで移動</span>
+                <span className="text-slate-600">|</span>
+                <span>⚡ <b>ダブルクリック</b>: 拡大 / リセット</span>
               </div>
             </div>
 
