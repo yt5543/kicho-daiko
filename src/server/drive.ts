@@ -447,8 +447,88 @@ export async function processAllPendingOcrReceipts(
   return { processedCount, highDemandAborted };
 }
 
+interface DriveFileItem {
+  id: string;
+  name: string;
+  mimeType: string;
+  createdTime?: string;
+}
+
 /**
- * 特定顧客の Google Drive フォルダを巡回し、新規レシート画像をR2/D1に取り込む
+ * 指定されたルートフォルダ配下（サブフォルダ・孫フォルダ…を含む全階層）の
+ * 画像ファイル一覧を再帰的（幅優先）に巡回して取得する
+ */
+async function listDriveImageFilesRecursive(
+  rootFolderId: string,
+  accessToken: string,
+  maxDepth = 10
+): Promise<DriveFileItem[]> {
+  const imageFiles: DriveFileItem[] = [];
+  const visitedFolders = new Set<string>([rootFolderId]);
+  let currentLevelFolderIds: string[] = [rootFolderId];
+  let depth = 0;
+
+  while (currentLevelFolderIds.length > 0 && depth < maxDepth) {
+    const nextLevelFolderIds: string[] = [];
+
+    // 同一階層の複数フォルダを最大15件ずつ1回のAPIクエリにまとめて高速検索
+    const chunkSize = 15;
+    for (let i = 0; i < currentLevelFolderIds.length; i += chunkSize) {
+      const folderChunk = currentLevelFolderIds.slice(i, i + chunkSize);
+      const parentsCondition = folderChunk
+        .map((id) => `'${id}' in parents`)
+        .join(' or ');
+
+      const q = `(${parentsCondition}) and (mimeType = 'application/vnd.google-apps.folder' or mimeType contains 'image/') and trashed = false`;
+
+      let pageToken: string | undefined = undefined;
+      do {
+        const pageParam = pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : '';
+        const listUrl = `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(
+          q
+        )}&fields=nextPageToken,files(id,name,mimeType,createdTime)&orderBy=createdTime asc&pageSize=100${pageParam}`;
+
+        const listRes = await fetch(listUrl, {
+          headers: { Authorization: `Bearer ${accessToken}` },
+        });
+
+        if (!listRes.ok) {
+          const errText = await listRes.text().catch(() => '');
+          throw new Error(
+            `Google Driveフォルダ(${rootFolderId})の読み取りに失敗しました: ${errText}`
+          );
+        }
+
+        const listData = (await listRes.json()) as {
+          nextPageToken?: string;
+          files?: DriveFileItem[];
+        };
+
+        for (const item of listData.files ?? []) {
+          if (item.mimeType === 'application/vnd.google-apps.folder') {
+            if (!visitedFolders.has(item.id)) {
+              visitedFolders.add(item.id);
+              nextLevelFolderIds.push(item.id);
+            }
+          } else if (item.mimeType.startsWith('image/')) {
+            imageFiles.push(item);
+          }
+        }
+
+        pageToken = listData.nextPageToken;
+      } while (pageToken);
+    }
+
+    currentLevelFolderIds = nextLevelFolderIds;
+    depth++;
+  }
+
+  return imageFiles;
+}
+
+/**
+ * 特定顧客の Google Drive フォルダ（サブフォルダ全階層を含む）を巡回し、
+ * 新規レシート画像をR2/D1に取り込む
  * （※ OCRは実行せず ocr_status='pending' として即時登録するため超高速）
  */
 export async function syncClientDriveFolder(
@@ -461,7 +541,7 @@ export async function syncClientDriveFolder(
     return [];
   }
 
-  // 1. 既に取り込み済みの drive_file_id 一覧をD1から取得（二重取り込み防止）
+  // 1. 既に取り込み済みの drive_file_id 一覧をD1から取得（フォルダ移動後の二重取り込みも完全防止）
   const { results: existingRows } = await env.DB.prepare(
     `SELECT drive_file_id FROM receipts WHERE client_id = ? AND drive_file_id != ''`
   )
@@ -470,30 +550,18 @@ export async function syncClientDriveFolder(
 
   const existingFileIds = new Set(existingRows.map((r) => r.drive_file_id));
 
-  // 2. Google Drive API で指定フォルダ内の画像ファイル一覧を取得
-  const q = `'${folderId}' in parents and mimeType contains 'image/' and trashed = false`;
-  const listUrl = `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(
-    q
-  )}&fields=files(id,name,mimeType,createdTime)&orderBy=createdTime asc&pageSize=50`;
+  // 2. Google Drive API で指定フォルダおよび配下の全サブフォルダ内の画像ファイル一覧を取得
+  const allImageFiles = await listDriveImageFilesRecursive(folderId, accessToken);
 
-  const listRes = await fetch(listUrl, {
-    headers: { Authorization: `Bearer ${accessToken}` },
+  // 同一ファイルIDの重複排除 ＆ 既に取り込み済みのファイルを除外
+  const seenInScan = new Set<string>();
+  const newFiles = allImageFiles.filter((f) => {
+    if (existingFileIds.has(f.id) || seenInScan.has(f.id)) {
+      return false;
+    }
+    seenInScan.add(f.id);
+    return true;
   });
-
-  if (!listRes.ok) {
-    const errText = await listRes.text().catch(() => '');
-    throw new Error(
-      `Google Driveフォルダ(${folderId})の読み取りに失敗しました: ${errText}`
-    );
-  }
-
-  const listData = (await listRes.json()) as {
-    files?: { id: string; name: string; mimeType: string }[];
-  };
-
-  const newFiles = (listData.files ?? []).filter(
-    (f) => !existingFileIds.has(f.id)
-  );
 
   const ingestedReceipts: Receipt[] = [];
 
