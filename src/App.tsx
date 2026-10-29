@@ -480,7 +480,12 @@ export default function App() {
       );
       if (refreshedRes.ok) {
         const refreshedData = (await refreshedRes.json()) as { receipts: Receipt[] };
-        setReceipts((refreshedData.receipts ?? []).map(mapReceiptToEditable));
+        const mapped = (refreshedData.receipts ?? []).map(mapReceiptToEditable);
+        setReceipts(mapped);
+        const firstWithDate = mapped.find((r) => /^\d{4}-\d{2}/.test(r.receipt_date));
+        if (firstWithDate) {
+          setExportMonth(firstWithDate.receipt_date.slice(0, 7));
+        }
       }
 
       setInfoMessage(data.message);
@@ -659,10 +664,10 @@ export default function App() {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        receipt_date: receipt.receipt_date,
+        receipt_date: receipt.receipt_date ?? '',
         amount: Math.trunc(headerAmount),
-        payee: receipt.payee,
-        memo: receipt.memo,
+        payee: receipt.payee ?? '',
+        memo: receipt.memo ?? '',
         status,
         items: receipt.items.map((item) => ({
           item_name: item.item_name || '（品名なし）',

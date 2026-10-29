@@ -555,11 +555,14 @@ app.get('/api/clients/:clientId/receipts/json', async (c) => {
 
       return {
         id: r.id,
-        receipt_date: r.receipt_date,
-        payee: r.payee,
-        total_amount: r.amount,
+        receipt_date: r.receipt_date ?? '',
+        payee: r.payee ?? '',
+        total_amount: r.amount ?? 0,
         memo: r.memo ?? '',
         status: r.status,
+        ocr_status: r.ocr_status ?? 'completed',
+        ocr_retry_count: r.ocr_retry_count ?? 0,
+        ocr_error: r.ocr_error ?? '',
         image_url: r.image_url,
         items,
       };
@@ -615,6 +618,9 @@ app.get('/api/clients/:clientId/receipts/csv', async (c) => {
          r.amount AS receipt_amount,
          r.memo,
          r.status,
+         r.ocr_status,
+         r.ocr_retry_count,
+         r.ocr_error,
          ri.line_number,
          ri.item_name,
          ri.amount AS item_amount,
@@ -662,21 +668,20 @@ app.put('/api/receipts/:receiptId', async (c) => {
     return c.json({ error: 'リクエストボディのJSONが不正です' }, 400);
   }
 
-  const { receipt_date, amount, payee, memo = '', items, status = 'approved' } = body;
+  const {
+    receipt_date = '',
+    amount = 0,
+    payee = '',
+    memo = '',
+    items = [],
+    status = 'approved',
+  } = body;
 
-  if (
-    !receipt_date ||
-    typeof amount !== 'number' ||
-    Number.isNaN(amount) ||
-    !payee ||
-    !Array.isArray(items) ||
-    items.length === 0
-  ) {
-    return c.json(
-      { error: '日付、合計金額、支払先、および1件以上の明細行を入力してください' },
-      400
-    );
-  }
+  const safeDate = String(receipt_date ?? '').trim();
+  const safeAmount = typeof amount === 'number' && !Number.isNaN(amount) ? Math.trunc(amount) : 0;
+  const safePayee = String(payee ?? '').trim();
+  const safeMemo = String(memo ?? '').trim();
+  const safeItems = Array.isArray(items) ? items : [];
 
   try {
     const existing = await c.env.DB.prepare('SELECT id FROM receipts WHERE id = ?')
@@ -697,11 +702,11 @@ app.put('/api/receipts/:receiptId', async (c) => {
              status = ?,
              updated_at = datetime('now')
          WHERE id = ?`
-      ).bind(receipt_date, Math.trunc(amount), payee.trim(), memo.trim(), status, receiptId),
+      ).bind(safeDate, safeAmount, safePayee, safeMemo, status, receiptId),
       c.env.DB.prepare('DELETE FROM receipt_items WHERE receipt_id = ?').bind(receiptId),
     ];
 
-    items.forEach((item, index) => {
+    safeItems.forEach((item, index) => {
       statements.push(
         c.env.DB.prepare(
           `INSERT INTO receipt_items
@@ -710,9 +715,9 @@ app.put('/api/receipts/:receiptId', async (c) => {
         ).bind(
           receiptId,
           index + 1,
-          item.item_name.trim(),
-          Math.trunc(item.amount),
-          item.tax_rate,
+          String(item.item_name ?? '').trim(),
+          typeof item.amount === 'number' && !Number.isNaN(item.amount) ? Math.trunc(item.amount) : 0,
+          typeof item.tax_rate === 'number' && !Number.isNaN(item.tax_rate) ? item.tax_rate : 10,
           item.is_reduced_tax ? 1 : 0,
           item.is_modified ? 1 : 0
         )
