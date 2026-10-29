@@ -102,3 +102,4 @@ export const ReceiptImageList: React.FC<ReceiptImageListProps> = ({
     </div>
   );
 };
+

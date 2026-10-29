@@ -61,3 +61,4 @@ export const OcrStatusBadge: React.FC<OcrStatusBadgeProps> = ({
     </span>
   );
 };
+

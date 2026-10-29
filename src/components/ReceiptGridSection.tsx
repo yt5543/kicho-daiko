@@ -352,3 +352,4 @@ export const ReceiptGridSection: React.FC<ReceiptGridSectionProps> = ({
     </div>
   );
 };
+
