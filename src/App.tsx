@@ -1,86 +1,26 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import type {
-  Client,
-  OcrStatus,
-  Receipt,
-  ReceiptItem,
-  TaxRateOption,
+import { ClientSidebar } from './components/ClientSidebar';
+import { FocusReviewModal } from './components/FocusReviewModal';
+import { ReceiptGridSection } from './components/ReceiptGridSection';
+import { ReceiptImageList } from './components/ReceiptImageList';
+import { TopHeaderBar } from './components/TopHeaderBar';
+import {
+  DEFAULT_TAX_RATES,
+  createRowKey,
+  mapReceiptToEditable,
+  type Client,
+  type EditableItem,
+  type EditableReceipt,
+  type OcrStatus,
+  type Receipt,
+  type ReceiptItem,
+  type ReceiptStats,
+  type TaxRateOption,
 } from './types';
 
 export type { Client, OcrStatus, Receipt, ReceiptItem, TaxRateOption };
 
-interface EditableItem {
-  key: string;
-  item_name: string;
-  amount: string;
-  tax_rate: string;
-  is_reduced_tax: boolean;
-  is_modified: boolean; // 手で修正したかどうかのフラグ
-}
-
-interface EditableReceipt {
-  id: number;
-  client_id: number;
-  image_url: string;
-  receipt_date: string;
-  amount: string;
-  payee: string;
-  memo: string;
-  status: 'unreviewed' | 'approved';
-  ocr_status: OcrStatus;
-  ocr_retry_count: number;
-  ocr_error: string;
-  items: EditableItem[];
-}
-
-const DEFAULT_TAX_RATES: TaxRateOption[] = [
-  { id: 1, rate: 10, name: '10% (標準)', is_reduced: 0, is_active: 1, sort_order: 10 },
-  { id: 2, rate: 8, name: '8% (軽減※)', is_reduced: 1, is_active: 1, sort_order: 20 },
-  { id: 3, rate: 1, name: '1% (軽減※)', is_reduced: 1, is_active: 1, sort_order: 30 },
-  { id: 4, rate: 0, name: '0% (非課税)', is_reduced: 0, is_active: 1, sort_order: 40 },
-];
-
 const API_BASE_URL = import.meta.env?.VITE_API_BASE_URL ?? '';
-
-function createRowKey(): string {
-  return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-}
-
-function mapReceiptToEditable(r: Receipt): EditableReceipt {
-  return {
-    id: r.id,
-    client_id: r.client_id,
-    image_url: r.image_url,
-    receipt_date: r.receipt_date ?? '',
-    amount: String(r.amount ?? 0),
-    payee: r.payee ?? '',
-    memo: r.memo ?? '',
-    status: r.status ?? 'unreviewed',
-    ocr_status: r.ocr_status ?? 'pending',
-    ocr_retry_count: r.ocr_retry_count ?? 0,
-    ocr_error: r.ocr_error ?? '',
-    items:
-      r.items && r.items.length > 0
-        ? r.items.map((item) => ({
-            key: createRowKey(),
-            item_name: item.item_name ?? '',
-            amount: String(item.amount ?? 0),
-            tax_rate: String(item.tax_rate ?? 10),
-            is_reduced_tax: Boolean(item.is_reduced_tax),
-            is_modified: Boolean(item.is_modified),
-          }))
-        : [
-            {
-              key: createRowKey(),
-              item_name: '明細1',
-              amount: String(r.amount ?? 0),
-              tax_rate: '10',
-              is_reduced_tax: false,
-              is_modified: false,
-            },
-          ],
-  };
-}
 
 export default function App() {
   const [clients, setClients] = useState<Client[]>([]);
@@ -103,49 +43,21 @@ export default function App() {
   const [runningOcr, setRunningOcr] = useState<boolean>(false);
   const [infoMessage, setInfoMessage] = useState<string | null>(null);
 
-  // 月指定エクスポート用（初期値: 2026-10）
+  // 月指定エクスポート用
   const [exportMonth, setExportMonth] = useState<string>('2026-10');
   const [exportingJson, setExportingJson] = useState<boolean>(false);
   const [exportingCsv, setExportingCsv] = useState<boolean>(false);
 
   // ローカル画像アップロード用
   const [uploadingFiles, setUploadingFiles] = useState<boolean>(false);
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const [loadingClients, setLoadingClients] = useState<boolean>(true);
   const [loadingReceipts, setLoadingReceipts] = useState<boolean>(false);
   const [submittingIds, setSubmittingIds] = useState<Set<number>>(new Set());
   const [error, setError] = useState<string | null>(null);
 
-  // 🔍 集中拡大レビューモード用 State (ホイールズーム ＆ ドラッグ移動対応)
+  // 🔍 集中拡大レビューモード用 対象レシートID
   const [focusReceiptId, setFocusReceiptId] = useState<number | null>(null);
-  const [focusZoom, setFocusZoom] = useState<number>(1.0);
-  const [focusRotation, setFocusRotation] = useState<number>(0);
-  const [focusPan, setFocusPan] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
-  const [isDraggingImage, setIsDraggingImage] = useState<boolean>(false);
-  const dragStartRef = useRef<{ x: number; y: number; panX: number; panY: number }>({
-    x: 0,
-    y: 0,
-    panX: 0,
-    panY: 0,
-  });
-
-  const resetFocusView = () => {
-    setFocusZoom(1.0);
-    setFocusRotation(0);
-    setFocusPan({ x: 0, y: 0 });
-  };
-
-  // 集中拡大モードでEscキー押下時に閉じる
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && focusReceiptId !== null) {
-        setFocusReceiptId(null);
-      }
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [focusReceiptId]);
 
   // スクロール連動用のRef
   const imageCardRefs = useRef<Map<number, HTMLDivElement>>(new Map());
@@ -395,7 +307,7 @@ export default function App() {
     }
   };
 
-  // Google Driveから新規レシート画像を今すぐ取り込むボタン処理（高速・OCRは別実行）
+  // Google Driveから新規レシート画像を今すぐ取り込むボタン処理
   const handleSyncDriveNow = async () => {
     if (!selectedClientId || syncingDrive) return;
     setSyncingDrive(true);
@@ -403,7 +315,6 @@ export default function App() {
     setInfoMessage(null);
 
     try {
-      // フォルダIDが入力変更されていれば先に保存
       if (selectedClient && driveFolderInput !== selectedClient.drive_folder_id) {
         await fetch(`${API_BASE_URL}/api/clients/${selectedClientId}/drive-folder`, {
           method: 'PUT',
@@ -452,7 +363,7 @@ export default function App() {
     }
   };
 
-  // 選択中顧客の OCR 未実行（pending_ocr）レシートを一括解析
+  // 選択中顧客の OCR 未実行レシートを一括解析
   const handleRunOcrBatch = async () => {
     if (!selectedClientId || runningOcr) return;
     setRunningOcr(true);
@@ -474,7 +385,6 @@ export default function App() {
         throw new Error(data.error || 'OCR解析に失敗しました');
       }
 
-      // レシート一覧を再取得して最新の明細・金額を反映
       const refreshedRes = await fetch(
         `${API_BASE_URL}/api/clients/${selectedClientId}/receipts?status=unreviewed`
       );
@@ -496,7 +406,7 @@ export default function App() {
     }
   };
 
-  // ローカル画像ファイルの取り込み（R2保存 → Gemini OCR → D1保存）
+  // ローカル画像ファイルの取り込み
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (!files || files.length === 0 || !selectedClientId) return;
@@ -541,9 +451,6 @@ export default function App() {
       setError(err instanceof Error ? err.message : '画像取り込み中にエラーが発生しました');
     } finally {
       setUploadingFiles(false);
-      if (fileInputRef.current) {
-        fileInputRef.current.value = '';
-      }
     }
   };
 
@@ -710,10 +617,14 @@ export default function App() {
     }
   };
 
-  // 月指定JSONダウンロード処理（次システム連携用）
-  const handleDownloadJson = async () => {
+  // 月指定エクスポート共通処理（JSON / CSV 統合）
+  const handleDownloadExport = async (format: 'json' | 'csv') => {
     if (!selectedClientId || !exportMonth) return;
-    setExportingJson(true);
+    const isJson = format === 'json';
+    const setExporting = isJson ? setExportingJson : setExportingCsv;
+    const label = isJson ? 'JSON' : 'CSV';
+
+    setExporting(true);
     setError(null);
 
     try {
@@ -722,70 +633,33 @@ export default function App() {
       }
 
       const res = await fetch(
-        `${API_BASE_URL}/api/clients/${selectedClientId}/receipts/json?month=${encodeURIComponent(
+        `${API_BASE_URL}/api/clients/${selectedClientId}/receipts/${format}?month=${encodeURIComponent(
           exportMonth
         )}`
       );
       if (!res.ok) {
         const errData = (await res.json().catch(() => ({}))) as { error?: string };
-        throw new Error(errData.error || 'JSONのダウンロードに失敗しました');
+        throw new Error(errData.error || `${label}のダウンロードに失敗しました`);
       }
 
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `receipts_${selectedClient?.name ?? selectedClientId}_${exportMonth}.json`;
+      a.download = `receipts_${selectedClient?.name ?? selectedClientId}_${exportMonth}.${format}`;
       document.body.appendChild(a);
       a.click();
       a.remove();
       URL.revokeObjectURL(url);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'JSON出力中にエラーが発生しました');
+      setError(err instanceof Error ? err.message : `${label}出力中にエラーが発生しました`);
     } finally {
-      setExportingJson(false);
-    }
-  };
-
-  // 月指定CSVダウンロード処理
-  const handleDownloadCsv = async () => {
-    if (!selectedClientId || !exportMonth) return;
-    setExportingCsv(true);
-    setError(null);
-
-    try {
-      for (const r of receipts) {
-        await saveReceiptToApi(r, 'unreviewed');
-      }
-
-      const res = await fetch(
-        `${API_BASE_URL}/api/clients/${selectedClientId}/receipts/csv?month=${encodeURIComponent(
-          exportMonth
-        )}`
-      );
-      if (!res.ok) {
-        const errData = (await res.json().catch(() => ({}))) as { error?: string };
-        throw new Error(errData.error || 'CSVのダウンロードに失敗しました');
-      }
-
-      const blob = await res.blob();
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `receipts_${selectedClient?.name ?? selectedClientId}_${exportMonth}.csv`;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      URL.revokeObjectURL(url);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'CSV出力中にエラーが発生しました');
-    } finally {
-      setExportingCsv(false);
+      setExporting(false);
     }
   };
 
   // 集計ステータス
-  const stats = useMemo(() => {
+  const stats = useMemo<ReceiptStats>(() => {
     let totalItems = 0;
     let modifiedItems = 0;
     let pendingOcrCount = 0;
@@ -807,234 +681,51 @@ export default function App() {
 
   return (
     <div className="flex h-screen bg-slate-100 text-slate-800">
-      {/* 左サイドバー: 顧客リスト */}
-      <aside className="w-56 bg-slate-900 text-slate-100 flex flex-col border-r border-slate-800 shrink-0">
-        <div className="p-4 border-b border-slate-800">
-          <h1 className="text-base font-bold tracking-tight">レシートOCR レビュー</h1>
-          <p className="text-[11px] text-slate-400 mt-0.5">Drive自動取込＆グリッド確認</p>
-        </div>
-
-        <div className="px-3 py-2.5 text-[11px] font-semibold uppercase tracking-wider text-slate-400 flex items-center justify-between">
-          <span>顧客一覧 ({clients.length})</span>
-          <button
-            type="button"
-            onClick={handleOpenCreateClientModal}
-            className="text-[11px] text-indigo-400 hover:text-indigo-300 font-bold flex items-center gap-0.5 cursor-pointer px-1 py-0.5 rounded hover:bg-slate-800 transition-colors"
-          >
-            ＋ 追加
-          </button>
-        </div>
-
-        <nav className="flex-1 overflow-y-auto px-2 space-y-1">
-          {loadingClients ? (
-            <div className="px-3 py-4 text-xs text-slate-400">読み込み中...</div>
-          ) : clients.length === 0 ? (
-            <div className="px-3 py-4 text-xs text-slate-400 text-center">
-              顧客が登録されていません。<br />上の「＋ 追加」から登録してください。
-            </div>
-          ) : (
-            clients.map((client) => {
-              const isSelected = client.id === selectedClientId;
-              return (
-                <div
-                  key={client.id}
-                  onClick={() => setSelectedClientId(client.id)}
-                  className={`group w-full text-left px-3 py-2 rounded-lg text-xs font-medium transition-colors flex items-center justify-between cursor-pointer ${
-                    isSelected
-                      ? 'bg-indigo-600 text-white shadow-xs'
-                      : 'text-slate-300 hover:bg-slate-800 hover:text-white'
-                  }`}
-                >
-                  <span className="truncate flex-1 mr-1">{client.name}</span>
-                  <div className="flex items-center gap-1 shrink-0">
-                    <span className="text-[10px] opacity-60">#{client.id}</span>
-                    <button
-                      type="button"
-                      title="顧客情報を編集"
-                      onClick={(e) => handleOpenEditClientModal(client, e)}
-                      className="opacity-0 group-hover:opacity-100 hover:text-amber-300 text-[10px] p-0.5 rounded transition-opacity"
-                    >
-                      ✎
-                    </button>
-                    <button
-                      type="button"
-                      title="顧客を削除"
-                      onClick={(e) => handleDeleteClient(client, e)}
-                      className="opacity-0 group-hover:opacity-100 hover:text-red-300 text-[10px] p-0.5 rounded transition-opacity"
-                    >
-                      ✕
-                    </button>
-                  </div>
-                </div>
-              );
-            })
-          )}
-        </nav>
-      </aside>
+      {/* 左サイドバー ＆ 顧客登録モーダル */}
+      <ClientSidebar
+        clients={clients}
+        selectedClientId={selectedClientId}
+        loadingClients={loadingClients}
+        onSelectClient={setSelectedClientId}
+        onOpenCreateModal={handleOpenCreateClientModal}
+        onOpenEditModal={handleOpenEditClientModal}
+        onDeleteClient={handleDeleteClient}
+        showClientModal={showClientModal}
+        clientModalMode={clientModalMode}
+        clientNameInput={clientNameInput}
+        clientFolderInput={clientFolderInput}
+        submittingClient={submittingClient}
+        onChangeNameInput={setClientNameInput}
+        onChangeFolderInput={setClientFolderInput}
+        onCloseModal={() => setShowClientModal(false)}
+        onSubmitModal={handleSaveClient}
+      />
 
       {/* メインエリア */}
       <main className="flex-1 flex flex-col min-w-0 overflow-hidden">
-        {/* 上部バー（1段目: 顧客ステータス・CSV出力・一括承認） */}
-        <header className="bg-white border-b border-slate-200 px-5 py-2.5 space-y-2 shrink-0">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div className="flex items-center gap-3 min-w-0">
-              <h2 className="text-base font-bold text-slate-900 truncate">
-                {selectedClient
-                  ? selectedClient.name
-                  : clients.length === 0
-                  ? '顧客が登録されていません'
-                  : '顧客を選択してください'}
-              </h2>
-              {selectedClient && (
-                <div className="flex items-center gap-2 text-xs shrink-0">
-                  <span className="px-2.5 py-0.5 rounded-full font-medium bg-slate-100 text-slate-700">
-                    未レビュー: <strong>{receipts.length}</strong> 枚 ({stats.totalItems} 行)
-                  </span>
-                  {stats.pendingOcrCount > 0 && (
-                    <span className="px-2.5 py-0.5 rounded-full font-bold bg-amber-100 text-amber-900 border border-amber-300">
-                      ⚡ OCR待ち: <strong>{stats.pendingOcrCount}</strong> 枚
-                    </span>
-                  )}
-                  {stats.failedOcrCount > 0 && (
-                    <span className="px-2.5 py-0.5 rounded-full font-bold bg-red-100 text-red-800 border border-red-300">
-                      ⚠️ 解析失敗: <strong>{stats.failedOcrCount}</strong> 枚
-                    </span>
-                  )}
-                  <span className="px-2.5 py-0.5 rounded-full font-medium bg-amber-50 text-amber-800 border border-amber-200">
-                    手修正済: <strong>{stats.modifiedItems}</strong> 行
-                  </span>
-                </div>
-              )}
-            </div>
-
-            {selectedClient && (
-              <div className="flex items-center gap-2.5 shrink-0">
-                {/* 月指定エクスポート（JSON出力メイン・CSV出力併設） */}
-                <div className="flex items-center gap-1.5 bg-slate-100 p-1 rounded-lg border border-slate-200">
-                  <label
-                    htmlFor="export-month"
-                    className="text-xs font-medium text-slate-600 pl-2"
-                  >
-                    対象月:
-                  </label>
-                  <input
-                    id="export-month"
-                    type="month"
-                    value={exportMonth}
-                    onChange={(e) => setExportMonth(e.target.value)}
-                    className="bg-white border border-slate-300 rounded px-2 py-1 text-xs font-mono text-slate-800 focus:outline-none focus:border-indigo-500"
-                  />
-                  <button
-                    type="button"
-                    disabled={exportingJson || !exportMonth}
-                    onClick={handleDownloadJson}
-                    className="inline-flex items-center gap-1 px-3 py-1 rounded-md text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 shadow-2xs disabled:opacity-50 transition-colors cursor-pointer"
-                    title="下流システム連携用の階層JSONを出力"
-                  >
-                    <span>{exportingJson ? '出力中...' : '⬇ JSON出力'}</span>
-                  </button>
-                  <button
-                    type="button"
-                    disabled={exportingCsv || !exportMonth}
-                    onClick={handleDownloadCsv}
-                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium text-slate-600 bg-white hover:bg-slate-50 border border-slate-300 shadow-2xs disabled:opacity-50 transition-colors cursor-pointer"
-                    title="補助用CSV出力"
-                  >
-                    <span>{exportingCsv ? '出力中...' : 'CSV'}</span>
-                  </button>
-                </div>
-
-                {receipts.length > 0 && (
-                  <button
-                    type="button"
-                    onClick={handleBatchApproveAllReceipts}
-                    className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 shadow-xs transition-colors cursor-pointer"
-                  >
-                    <span>全レシートを一括承認 ({receipts.length}枚)</span>
-                  </button>
-                )}
-              </div>
-            )}
-          </div>
-
-          {/* 上部バー（2段目: Google Drive連携・レシート取り込みボタン） */}
-          {selectedClient && (
-            <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-100 text-xs">
-              <div className="flex items-center gap-2 flex-1 min-w-[280px]">
-                <span className="text-slate-500 font-medium shrink-0">
-                  📁 DriveフォルダID / URL:
-                </span>
-                <input
-                  type="text"
-                  value={driveFolderInput}
-                  onChange={(e) => setDriveFolderInput(e.target.value)}
-                  placeholder="Google DriveのフォルダURLまたはIDを入力（毎日Cronで自動巡回）"
-                  className="max-w-md w-full rounded border border-slate-300 px-2.5 py-1 text-xs font-mono text-slate-800 focus:outline-none focus:border-indigo-500"
-                />
-                <button
-                  type="button"
-                  disabled={savingFolder}
-                  onClick={handleSaveDriveFolder}
-                  className="px-2.5 py-1 rounded border border-slate-300 bg-slate-50 hover:bg-slate-100 text-slate-700 font-medium cursor-pointer shrink-0"
-                >
-                  {savingFolder ? '保存中...' : 'フォルダ保存'}
-                </button>
-              </div>
-
-              <div className="flex items-center gap-2 shrink-0">
-                {/* Google Driveから今すぐ画像を取り込むボタン */}
-                <button
-                  type="button"
-                  disabled={syncingDrive}
-                  onClick={handleSyncDriveNow}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold text-emerald-800 bg-emerald-50 hover:bg-emerald-100 border border-emerald-300 disabled:opacity-50 transition-colors cursor-pointer"
-                  title="Google Driveから新規画像を高速取り込み（OCR解析待ちとして登録）"
-                >
-                  <span>
-                    {syncingDrive ? 'Drive取込中...' : '🔄 Driveから画像取込'}
-                  </span>
-                </button>
-
-                {/* pending_ocr がある場合に表示するOCR解析実行ボタン */}
-                <button
-                  type="button"
-                  disabled={runningOcr || stats.pendingOcrCount === 0}
-                  onClick={handleRunOcrBatch}
-                  className={`inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                    stats.pendingOcrCount > 0
-                      ? 'text-white bg-amber-600 hover:bg-amber-700 shadow-xs'
-                      : 'text-slate-400 bg-slate-100 border border-slate-200 cursor-not-allowed opacity-60'
-                  }`}
-                  title="OCR解析待ちのレシート画像をGeminiで自動解析して明細を抽出"
-                >
-                  <span>
-                    {runningOcr
-                      ? '⚡ OCR解析中...'
-                      : `⚡ OCR解析を実行 (${stats.pendingOcrCount}件)`}
-                  </span>
-                </button>
-
-                {/* ローカルPC/スマホから直接画像をアップロードするボタン */}
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  accept="image/*"
-                  multiple
-                  onChange={handleFileUpload}
-                  className="hidden"
-                />
-                <button
-                  type="button"
-                  disabled={uploadingFiles}
-                  onClick={() => fileInputRef.current?.click()}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold text-indigo-700 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 disabled:opacity-50 transition-colors cursor-pointer"
-                >
-                  <span>{uploadingFiles ? '取込中...' : '＋ ローカル画像取込'}</span>
-                </button>
-              </div>
-            </div>
-          )}
-        </header>
+        {/* 上部バー */}
+        <TopHeaderBar
+          selectedClient={selectedClient}
+          clientsCount={clients.length}
+          receiptsCount={receipts.length}
+          stats={stats}
+          exportMonth={exportMonth}
+          exportingJson={exportingJson}
+          exportingCsv={exportingCsv}
+          driveFolderInput={driveFolderInput}
+          savingFolder={savingFolder}
+          syncingDrive={syncingDrive}
+          runningOcr={runningOcr}
+          uploadingFiles={uploadingFiles}
+          onChangeExportMonth={setExportMonth}
+          onDownloadExport={handleDownloadExport}
+          onBatchApproveAll={handleBatchApproveAllReceipts}
+          onChangeDriveFolderInput={setDriveFolderInput}
+          onSaveDriveFolder={handleSaveDriveFolder}
+          onSyncDriveNow={handleSyncDriveNow}
+          onRunOcrBatch={handleRunOcrBatch}
+          onFileUpload={handleFileUpload}
+        />
 
         {/* 完了メッセージ通知 */}
         {infoMessage && (
@@ -1102,1039 +793,55 @@ export default function App() {
                 未レビューのレシートはありません
               </h3>
               <p className="text-xs text-slate-500 mt-1">
-                上部の「🔄 Driveからレシート取込」や「＋ ローカル画像取込」から取り込むか、「⬇ CSV出力」から月別データを出力できます。
+                上部の「🔄 Driveから画像取込」や「＋ ローカル画像取込」から取り込むか、「⬇ JSON出力」「CSV」から月別データを出力できます。
               </p>
             </div>
           ) : (
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 h-full">
               {/* 左カラム (5/12): レシート画像の縦スクロール一覧 */}
-              <div className="lg:col-span-5 bg-slate-900 rounded-xl border border-slate-800 flex flex-col overflow-hidden">
-                <div className="px-4 py-2.5 bg-slate-800 border-b border-slate-700 flex items-center justify-between text-xs text-slate-300 shrink-0">
-                  <span className="font-semibold">
-                    レシート画像一覧（縦スクロールで連続確認）
-                  </span>
-                  <span className="text-[11px] text-slate-400">
-                    全 {receipts.length} 枚
-                  </span>
-                </div>
+              <ReceiptImageList
+                receipts={receipts}
+                activeReceiptId={activeReceiptId}
+                imageCardRefs={imageCardRefs}
+                onFocusGridSection={focusGridSection}
+                onOpenFocusReview={setFocusReceiptId}
+              />
 
-                <div className="flex-1 overflow-y-auto p-4 space-y-6">
-                  {receipts.map((receipt, index) => {
-                    const isActive = activeReceiptId === receipt.id;
-                    const hasModified = receipt.items.some((item) => item.is_modified);
-
-                    return (
-                      <div
-                        key={receipt.id}
-                        ref={(el) => {
-                          if (el) imageCardRefs.current.set(receipt.id, el);
-                          else imageCardRefs.current.delete(receipt.id);
-                        }}
-                        onClick={() => focusGridSection(receipt.id)}
-                        className={`rounded-xl border-2 transition-all cursor-pointer overflow-hidden ${
-                          isActive
-                            ? 'border-indigo-400 ring-2 ring-indigo-500/40 bg-slate-800'
-                            : hasModified
-                            ? 'border-amber-500/60 bg-slate-800/60'
-                            : 'border-slate-700 bg-slate-800/40 hover:border-slate-600'
-                        }`}
-                      >
-                        {/* 画像カードヘッダ */}
-                        <div className="px-3.5 py-2 bg-slate-800 border-b border-slate-700 flex items-center justify-between text-xs">
-                          <div className="flex items-center gap-2 min-w-0">
-                            <span className="px-2 py-0.5 rounded bg-indigo-600 text-white font-mono font-bold text-[11px] shrink-0">
-                              #{index + 1} (ID:{receipt.id})
-                            </span>
-                            <span className="text-slate-200 font-medium truncate">
-                              {receipt.payee}
-                            </span>
-                            <span className="text-slate-400 font-mono shrink-0">
-                              {receipt.receipt_date}
-                            </span>
-                          </div>
-                          <div className="flex items-center gap-2 shrink-0">
-                            {receipt.ocr_status === 'pending' ? (
-                              <span className="px-2 py-0.5 rounded bg-amber-500 text-slate-900 text-[11px] font-bold">
-                                {receipt.ocr_retry_count > 0
-                                  ? `⏳ 再試行待ち (${receipt.ocr_retry_count}/3)`
-                                  : '⏳ OCR待ち'}
-                              </span>
-                            ) : receipt.ocr_status === 'processing' ? (
-                              <span className="px-2 py-0.5 rounded bg-indigo-500 text-white text-[11px] font-bold animate-pulse">
-                                🔄 解析中
-                              </span>
-                            ) : receipt.ocr_status === 'failed' ? (
-                              <span
-                                className="px-2 py-0.5 rounded bg-red-600 text-white text-[11px] font-bold cursor-help"
-                                title={receipt.ocr_error}
-                              >
-                                ⚠️ 解析失敗({receipt.ocr_retry_count}回)
-                              </span>
-                            ) : hasModified ? (
-                              <span className="px-2 py-0.5 rounded bg-amber-500/20 text-amber-300 text-[11px] font-semibold">
-                                ✎ 修正あり
-                              </span>
-                            ) : (
-                              <span className="px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 text-[11px] font-medium">
-                                ✓ OCR済
-                              </span>
-                            )}
-                            <button
-                              type="button"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                setFocusReceiptId(receipt.id);
-                                resetFocusView();
-                              }}
-                              className="px-2 py-0.5 rounded bg-indigo-600 hover:bg-indigo-500 text-white text-[11px] font-bold cursor-pointer transition-colors flex items-center gap-0.5 shadow-2xs"
-                              title="サイドバーを隠して大画面で画像とグリッドを並べて集中確認"
-                            >
-                              🔍 拡大
-                            </button>
-                          </div>
-                        </div>
-
-                        {/* メモプレビュー */}
-                        {receipt.memo && (
-                          <div className="px-3.5 py-1.5 bg-slate-800/90 border-b border-slate-700/80 text-xs text-amber-200 flex items-center gap-1.5">
-                            <span>📝</span>
-                            <span className="truncate">{receipt.memo}</span>
-                          </div>
-                        )}
-
-                        {/* レシート画像本体 */}
-                        <div className="p-3 flex justify-center bg-slate-900/60">
-                          <img
-                            src={receipt.image_url}
-                            alt={`Receipt #${receipt.id}`}
-                            className="max-h-[420px] w-auto object-contain rounded shadow"
-                          />
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-
-              {/* 右カラム (7/12): 品名・金額・税率・修正済ボタンのグリッド */}
-              <div className="lg:col-span-7 bg-white rounded-xl border border-slate-200 shadow-xs flex flex-col overflow-hidden">
-                <div className="px-4 py-2.5 bg-slate-50 border-b border-slate-200 flex items-center justify-between text-xs text-slate-600 shrink-0">
-                  <span className="font-semibold text-slate-800">
-                    OCR文字起こし確認グリッド（品名・金額・税率・修正済＋レシート別メモ）
-                  </span>
-                  <span className="text-[11px] text-slate-500">
-                    値を手入力で直すと自動で「修正済」になります
-                  </span>
-                </div>
-
-                <div className="flex-1 overflow-y-auto">
-                  <table className="w-full border-collapse text-left">
-                    {/* スティッキーテーブルヘッダ */}
-                    <thead className="sticky top-0 z-10 bg-slate-100 border-b border-slate-300 text-[11px] font-bold text-slate-600 uppercase">
-                      <tr>
-                        <th className="py-2.5 px-3 w-12 text-center">行</th>
-                        <th className="py-2.5 px-3">品名（文字起こし内容）</th>
-                        <th className="py-2.5 px-3 w-32 text-right">金額 (税込)</th>
-                        <th className="py-2.5 px-3 w-48">税率区分 / 直接入力</th>
-                        <th className="py-2.5 px-2 w-10 text-center">削</th>
-                        <th className="py-2.5 px-3 w-24 text-center bg-amber-100/70 text-amber-900 border-l border-slate-300">
-                          修正済
-                        </th>
-                      </tr>
-                    </thead>
-
-                    {receipts.map((receipt, rIdx) => {
-                      const itemsTotal = receipt.items.reduce(
-                        (sum, item) => sum + (Number(item.amount) || 0),
-                        0
-                      );
-                      const receiptTotal = Number(receipt.amount) || 0;
-                      const isDiff = itemsTotal !== receiptTotal;
-                      const modifiedCount = receipt.items.filter(
-                        (item) => item.is_modified
-                      ).length;
-                      const isSubmitting = submittingIds.has(receipt.id);
-                      const isActive = activeReceiptId === receipt.id;
-
-                      return (
-                        <tbody
-                          key={receipt.id}
-                          ref={(el) => {
-                            if (el) gridSectionRefs.current.set(receipt.id, el);
-                            else gridSectionRefs.current.delete(receipt.id);
-                          }}
-                          onClick={() => focusReceiptImage(receipt.id)}
-                          className={`border-b-4 border-slate-200 ${
-                            isActive ? 'bg-indigo-50/15' : ''
-                          }`}
-                        >
-                          {/* レシート区切りヘッダ行 */}
-                          <tr className="bg-slate-800 text-slate-100 text-xs">
-                            <td colSpan={6} className="px-3 py-2.5 space-y-2">
-                              {/* 1段目: レシート番号・日付・支払先・合計・アクション */}
-                              <div className="flex flex-wrap items-center justify-between gap-2">
-                                <div className="flex flex-wrap items-center gap-2">
-                                  <span className="px-2 py-0.5 rounded bg-indigo-500 text-white font-mono font-bold text-[11px]">
-                                    レシート #{rIdx + 1}
-                                  </span>
-
-                                  <input
-                                    type="date"
-                                    value={receipt.receipt_date}
-                                    onChange={(e) =>
-                                      handleReceiptFieldChange(
-                                        receipt.id,
-                                        'receipt_date',
-                                        e.target.value
-                                      )
-                                    }
-                                    className="bg-slate-700 text-white border border-slate-600 rounded px-2 py-0.5 text-xs font-mono focus:outline-none focus:border-indigo-400"
-                                  />
-
-                                  <input
-                                    type="text"
-                                    value={receipt.payee}
-                                    onChange={(e) =>
-                                      handleReceiptFieldChange(
-                                        receipt.id,
-                                        'payee',
-                                        e.target.value
-                                      )
-                                    }
-                                    placeholder="支払先"
-                                    className="bg-slate-700 text-white border border-slate-600 rounded px-2 py-0.5 text-xs w-44 focus:outline-none focus:border-indigo-400"
-                                  />
-
-                                  <div className="flex items-center gap-1">
-                                    <span className="text-[11px] text-slate-400">
-                                      領収書計:¥
-                                    </span>
-                                    <input
-                                      type="number"
-                                      step="1"
-                                      value={receipt.amount}
-                                      onChange={(e) =>
-                                        handleReceiptFieldChange(
-                                          receipt.id,
-                                          'amount',
-                                          e.target.value
-                                        )
-                                      }
-                                      className="bg-slate-700 text-white border border-slate-600 rounded px-1.5 py-0.5 text-xs w-20 font-mono text-right focus:outline-none focus:border-indigo-400"
-                                    />
-                                  </div>
-
-                                  <span className="text-[11px] text-slate-300 font-mono">
-                                    (明細計: ¥{itemsTotal.toLocaleString()})
-                                  </span>
-                                  {receipt.ocr_status === 'pending' && (
-                                    <span className="px-2 py-0.5 rounded bg-amber-500 text-slate-900 text-[11px] font-bold">
-                                      {receipt.ocr_retry_count > 0
-                                        ? `⏳ 再試行待ち (${receipt.ocr_retry_count}/3)`
-                                        : '⏳ OCR解析待ち'}
-                                    </span>
-                                  )}
-                                  {receipt.ocr_status === 'failed' && (
-                                    <span
-                                      className="px-2 py-0.5 rounded bg-red-600 text-white text-[11px] font-bold cursor-help"
-                                      title={receipt.ocr_error}
-                                    >
-                                      ⚠️ OCR失敗({receipt.ocr_retry_count}回)
-                                    </span>
-                                  )}
-                                  {receipt.ocr_status === 'completed' && isDiff && (
-                                    <span className="px-1.5 py-0.5 rounded bg-red-500/20 text-red-300 text-[11px]">
-                                      差額あり
-                                    </span>
-                                  )}
-                                  {modifiedCount > 0 && (
-                                    <span className="px-1.5 py-0.5 rounded bg-amber-500/25 text-amber-300 text-[11px] font-medium">
-                                      ✎ {modifiedCount}件修正済
-                                    </span>
-                                  )}
-                                </div>
-
-                                <div className="flex items-center gap-1.5">
-                                  <button
-                                    type="button"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      setFocusReceiptId(receipt.id);
-                                      setFocusZoom(1.0);
-                                      setFocusRotation(0);
-                                    }}
-                                    className="px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 text-indigo-300 text-[11px] font-bold cursor-pointer flex items-center gap-1"
-                                    title="サイドバーを隠して大画面で画像とグリッドを並べて確認"
-                                  >
-                                    🔍 集中拡大
-                                  </button>
-
-                                  <button
-                                    type="button"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      handleAddItem(receipt.id);
-                                    }}
-                                    className="px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-200 text-[11px] font-medium cursor-pointer"
-                                  >
-                                    ＋ 行追加
-                                  </button>
-
-                                  <button
-                                    type="button"
-                                    disabled={isSubmitting}
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      approveReceipt(receipt);
-                                    }}
-                                    className="px-2.5 py-1 rounded text-[11px] font-bold bg-indigo-600 hover:bg-indigo-500 text-white transition-colors cursor-pointer"
-                                  >
-                                    {isSubmitting ? '保存中...' : '承認完了'}
-                                  </button>
-                                </div>
-                              </div>
-
-                              {/* 2段目: レシートごとのメモ欄 */}
-                              <div className="flex items-center gap-2">
-                                <span className="text-[11px] text-slate-300 shrink-0">
-                                  📝 メモ:
-                                </span>
-                                <input
-                                  type="text"
-                                  value={receipt.memo}
-                                  onChange={(e) =>
-                                    handleReceiptFieldChange(
-                                      receipt.id,
-                                      'memo',
-                                      e.target.value
-                                    )
-                                  }
-                                  placeholder="例: 〇〇様と会食 / 2行目が経費です など自由に記入"
-                                  className="w-full bg-slate-700/80 text-white placeholder-slate-400 border border-slate-600 rounded px-2.5 py-1 text-xs focus:outline-none focus:border-indigo-400 focus:bg-slate-700"
-                                />
-                              </div>
-                            </td>
-                          </tr>
-
-                          {/* 各明細行（グリッド） */}
-                          {receipt.items.map((item, idx) => {
-                            const currentPresetKey = `${Number(item.tax_rate)}:${
-                              item.is_reduced_tax ? 1 : 0
-                            }`;
-                            const isPresetMatched = taxRateOptions.some(
-                              (opt) => `${opt.rate}:${opt.is_reduced}` === currentPresetKey
-                            );
-
-                            return (
-                              <tr
-                                key={item.key}
-                                className={`border-b border-slate-200 transition-colors ${
-                                  item.is_modified
-                                    ? 'bg-amber-50/70 hover:bg-amber-50'
-                                    : 'bg-white hover:bg-slate-50'
-                                }`}
-                              >
-                                <td className="py-1.5 px-2 text-center font-mono text-xs text-slate-400">
-                                  {idx + 1}
-                                </td>
-
-                                <td className="py-1.5 px-2">
-                                  <input
-                                    type="text"
-                                    value={item.item_name}
-                                    onChange={(e) =>
-                                      handleItemChange(
-                                        receipt.id,
-                                        item.key,
-                                        'item_name',
-                                        e.target.value
-                                      )
-                                    }
-                                    placeholder="品名を入力"
-                                    className="w-full rounded border border-transparent hover:border-slate-300 focus:border-indigo-500 focus:bg-white bg-transparent px-2 py-1 text-sm text-slate-900 focus:outline-none"
-                                  />
-                                </td>
-
-                                <td className="py-1.5 px-2">
-                                  <div className="relative flex items-center">
-                                    <span className="absolute left-2 text-xs text-slate-400 pointer-events-none">
-                                      ¥
-                                    </span>
-                                    <input
-                                      type="number"
-                                      step="1"
-                                      value={item.amount}
-                                      onChange={(e) =>
-                                        handleItemChange(
-                                          receipt.id,
-                                          item.key,
-                                          'amount',
-                                          e.target.value
-                                        )
-                                      }
-                                      className="w-full rounded border border-transparent hover:border-slate-300 focus:border-indigo-500 focus:bg-white bg-transparent pl-5 pr-2 py-1 text-right font-mono text-sm text-slate-900 focus:outline-none"
-                                    />
-                                  </div>
-                                </td>
-
-                                <td className="py-1.5 px-2">
-                                  <div className="flex items-center gap-1">
-                                    <select
-                                      value={isPresetMatched ? currentPresetKey : 'custom'}
-                                      onChange={(e) => {
-                                        if (e.target.value !== 'custom') {
-                                          handleTaxPresetChange(
-                                            receipt.id,
-                                            item.key,
-                                            e.target.value
-                                          );
-                                        }
-                                      }}
-                                      className={`rounded border px-1.5 py-1 text-xs font-medium focus:outline-none ${
-                                        item.is_reduced_tax
-                                          ? 'bg-amber-50 border-amber-300 text-amber-900'
-                                          : 'bg-white border-slate-200 text-slate-700'
-                                      }`}
-                                    >
-                                      {taxRateOptions.map((opt) => (
-                                        <option
-                                          key={opt.id}
-                                          value={`${opt.rate}:${opt.is_reduced}`}
-                                        >
-                                          {opt.name}
-                                        </option>
-                                      ))}
-                                      {!isPresetMatched && (
-                                        <option value="custom">カスタム</option>
-                                      )}
-                                    </select>
-
-                                    <div className="flex items-center">
-                                      <input
-                                        type="number"
-                                        step="0.1"
-                                        min="0"
-                                        max="100"
-                                        title="税率(%)を直接入力"
-                                        value={item.tax_rate}
-                                        onChange={(e) =>
-                                          handleItemChange(
-                                            receipt.id,
-                                            item.key,
-                                            'tax_rate',
-                                            e.target.value
-                                          )
-                                        }
-                                        className="w-11 rounded border border-slate-200 bg-white px-1 py-1 text-right font-mono text-xs text-slate-700 focus:border-indigo-500 focus:outline-none"
-                                      />
-                                      <span className="text-[11px] text-slate-400 ml-0.5">
-                                        %
-                                      </span>
-                                    </div>
-                                  </div>
-                                </td>
-
-                                <td className="py-1.5 px-1 text-center">
-                                  <button
-                                    type="button"
-                                    disabled={receipt.items.length <= 1}
-                                    onClick={() => handleRemoveItem(receipt.id, item.key)}
-                                    title="行を削除"
-                                    className="text-slate-300 hover:text-red-500 disabled:opacity-20 text-xs px-1 cursor-pointer"
-                                  >
-                                    ✕
-                                  </button>
-                                </td>
-
-                                <td
-                                  onClick={() =>
-                                    handleItemChange(
-                                      receipt.id,
-                                      item.key,
-                                      'is_modified',
-                                      !item.is_modified
-                                    )
-                                  }
-                                  title="クリックで「修正済」状態を切り替え"
-                                  className="py-1.5 px-2 text-center border-l border-slate-200 cursor-pointer select-none"
-                                >
-                                  <button
-                                    type="button"
-                                    className={`inline-flex items-center justify-center w-16 h-7 rounded-md font-bold text-xs transition-all cursor-pointer ${
-                                      item.is_modified
-                                        ? 'bg-amber-500 text-white shadow-2xs'
-                                        : 'bg-slate-100 text-slate-400 hover:bg-slate-200 border border-slate-200'
-                                    }`}
-                                  >
-                                    {item.is_modified ? '✎ 修正済' : '未修正'}
-                                  </button>
-                                </td>
-                              </tr>
-                            );
-                          })}
-                        </tbody>
-                      );
-                    })}
-                  </table>
-                </div>
-              </div>
+              {/* 右カラム (7/12): 明細グリッド一覧 */}
+              <ReceiptGridSection
+                receipts={receipts}
+                activeReceiptId={activeReceiptId}
+                submittingIds={submittingIds}
+                taxRateOptions={taxRateOptions}
+                gridSectionRefs={gridSectionRefs}
+                onFocusReceiptImage={focusReceiptImage}
+                onOpenFocusReview={setFocusReceiptId}
+                onReceiptFieldChange={handleReceiptFieldChange}
+                onItemChange={handleItemChange}
+                onTaxPresetChange={handleTaxPresetChange}
+                onAddItem={handleAddItem}
+                onRemoveItem={handleRemoveItem}
+                onApproveReceipt={approveReceipt}
+              />
             </div>
           )}
         </div>
       </main>
 
-      {/* 🔍 集中拡大レビューモード（全画面 左右2分割集中ビュー） */}
+      {/* 🔍 集中拡大レビューモード */}
       {focusReceipt && (
-        <div className="fixed inset-0 z-50 bg-slate-950 flex flex-col animate-in fade-in duration-150 text-slate-100">
-          {/* 上部コントロールバー */}
-          <header className="h-12 bg-slate-900 border-b border-slate-800 px-4 flex items-center justify-between shrink-0 select-none">
-            {/* 左側: レシート番号・支払先・日付・前後切り替え */}
-            <div className="flex items-center gap-3">
-              <span className="px-2 py-0.5 rounded bg-indigo-600 text-white font-mono font-bold text-xs">
-                #{receipts.findIndex((r) => r.id === focusReceipt.id) + 1} / {receipts.length}
-              </span>
-              <span className="text-sm font-bold text-slate-100 truncate max-w-xs">
-                {focusReceipt.payee || '（支払先未定）'}
-              </span>
-              <span className="text-xs text-slate-400 font-mono">
-                {focusReceipt.receipt_date}
-              </span>
-
-              {/* 前後レシート切り替え */}
-              <div className="flex items-center gap-1 ml-2 border-l border-slate-700 pl-3">
-                <button
-                  type="button"
-                  disabled={receipts.findIndex((r) => r.id === focusReceipt.id) === 0}
-                  onClick={() => {
-                    const idx = receipts.findIndex((r) => r.id === focusReceipt.id);
-                    if (idx > 0) {
-                      setFocusReceiptId(receipts[idx - 1].id);
-                      resetFocusView();
-                    }
-                  }}
-                  className="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 disabled:opacity-30 text-xs font-bold cursor-pointer transition-colors"
-                  title="前のレシートへ"
-                >
-                  ◀ 前へ
-                </button>
-                <button
-                  type="button"
-                  disabled={
-                    receipts.findIndex((r) => r.id === focusReceipt.id) ===
-                    receipts.length - 1
-                  }
-                  onClick={() => {
-                    const idx = receipts.findIndex((r) => r.id === focusReceipt.id);
-                    if (idx < receipts.length - 1) {
-                      setFocusReceiptId(receipts[idx + 1].id);
-                      resetFocusView();
-                    }
-                  }}
-                  className="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 disabled:opacity-30 text-xs font-bold cursor-pointer transition-colors"
-                  title="次のレシートへ"
-                >
-                  次へ ▶
-                </button>
-              </div>
-            </div>
-
-            {/* 中央: ズーム & 表示切替ツール */}
-            <div className="flex items-center gap-1.5 bg-slate-800/90 px-3 py-1 rounded-lg border border-slate-700 text-xs">
-              <button
-                type="button"
-                onClick={resetFocusView}
-                className={`px-2.5 py-1 rounded text-xs font-medium cursor-pointer transition-colors ${
-                  focusZoom === 1.0 && focusPan.x === 0 && focusPan.y === 0
-                    ? 'bg-indigo-600 text-white shadow-sm'
-                    : 'bg-slate-700 hover:bg-slate-600 text-slate-200'
-                }`}
-                title="初期位置・全体表示にリセットします"
-              >
-                ↕ 全体表示リセット
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setFocusZoom(1.8);
-                  setFocusPan({ x: 0, y: 120 });
-                }}
-                className={`px-2.5 py-1 rounded text-xs font-medium cursor-pointer transition-colors ${
-                  focusZoom >= 1.7 && focusZoom <= 1.9
-                    ? 'bg-indigo-600 text-white shadow-sm'
-                    : 'bg-slate-700 hover:bg-slate-600 text-slate-200'
-                }`}
-                title="文字を大きく拡大してレシート上部を表示します"
-              >
-                🔍 文字大 (180%)
-              </button>
-
-              <div className="h-4 w-px bg-slate-600 mx-1" />
-
-              <button
-                type="button"
-                onClick={() => setFocusZoom((z) => Math.max(0.4, Number((z - 0.2).toFixed(1))))}
-                className="w-6 h-6 rounded bg-slate-700 hover:bg-slate-600 flex items-center justify-center font-bold text-slate-200 cursor-pointer"
-                title="縮小"
-              >
-                ー
-              </button>
-              <span className="w-12 text-center font-mono text-[11px] text-indigo-300 font-bold">
-                {Math.round(focusZoom * 100)}%
-              </span>
-              <button
-                type="button"
-                onClick={() => setFocusZoom((z) => Math.min(4.0, Number((z + 0.2).toFixed(1))))}
-                className="w-6 h-6 rounded bg-slate-700 hover:bg-slate-600 flex items-center justify-center font-bold text-slate-200 cursor-pointer"
-                title="拡大"
-              >
-                ＋
-              </button>
-
-              <div className="h-4 w-px bg-slate-600 mx-1" />
-
-              <button
-                type="button"
-                onClick={() => setFocusRotation((r) => (r + 90) % 360)}
-                className="px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 text-xs text-slate-200 cursor-pointer ml-1 flex items-center gap-1"
-                title="時計回りに90°回転"
-              >
-                ⟳ 回転
-              </button>
-            </div>
-
-            {/* 右側: 承認ボタン & 閉じる */}
-            <div className="flex items-center gap-3">
-              <button
-                type="button"
-                onClick={async () => {
-                  const currentIdx = receipts.findIndex((r) => r.id === focusReceipt.id);
-                  await approveReceipt(focusReceipt);
-                  if (receipts.length > 1) {
-                    const nextReceipt =
-                      currentIdx < receipts.length - 1
-                        ? receipts[currentIdx + 1]
-                        : receipts[currentIdx - 1];
-                    setFocusReceiptId(nextReceipt.id);
-                    resetFocusView();
-                  } else {
-                    setFocusReceiptId(null);
-                  }
-                }}
-                className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-500 shadow-sm transition-colors cursor-pointer"
-              >
-                ✓ このレシートを承認して次へ
-              </button>
-
-              <button
-                type="button"
-                onClick={() => setFocusReceiptId(null)}
-                className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border border-slate-700 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-medium cursor-pointer"
-                title="Escキーでも閉じられます"
-              >
-                ✕ 閉じる (Esc)
-              </button>
-            </div>
-          </header>
-
-          {/* メイン 2分割エリア */}
-          <div className="flex-1 flex overflow-hidden">
-            {/* 左半分 (58%): 特大レシート画像ビューア（ホイール拡大縮小 ＆ ドラッグ移動） */}
-            <div
-              className={`w-[58%] h-full bg-slate-950 border-r border-slate-800 flex items-center justify-center p-6 overflow-hidden select-none relative ${
-                isDraggingImage ? 'cursor-grabbing' : 'cursor-grab'
-              }`}
-              onWheel={(e) => {
-                e.preventDefault();
-                const delta = e.deltaY < 0 ? 0.18 : -0.18;
-                setFocusZoom((z) => Math.min(4.0, Math.max(0.4, Number((z + delta).toFixed(2)))));
-              }}
-              onMouseDown={(e) => {
-                if (e.button !== 0) return;
-                e.preventDefault();
-                setIsDraggingImage(true);
-                dragStartRef.current = {
-                  x: e.clientX,
-                  y: e.clientY,
-                  panX: focusPan.x,
-                  panY: focusPan.y,
-                };
-              }}
-              onMouseMove={(e) => {
-                if (!isDraggingImage) return;
-                const dx = e.clientX - dragStartRef.current.x;
-                const dy = e.clientY - dragStartRef.current.y;
-                setFocusPan({
-                  x: dragStartRef.current.panX + dx,
-                  y: dragStartRef.current.panY + dy,
-                });
-              }}
-              onMouseUp={() => setIsDraggingImage(false)}
-              onMouseLeave={() => setIsDraggingImage(false)}
-              onDoubleClick={() => {
-                if (focusZoom === 1.0 && focusPan.x === 0 && focusPan.y === 0) {
-                  setFocusZoom(1.8);
-                  setFocusPan({ x: 0, y: 120 });
-                } else {
-                  resetFocusView();
-                }
-              }}
-            >
-              <div
-                className={`flex items-center justify-center ${
-                  isDraggingImage ? '' : 'transition-transform duration-100 ease-out'
-                }`}
-                style={{
-                  transform: `translate(${focusPan.x}px, ${focusPan.y}px) scale(${focusZoom}) rotate(${focusRotation}deg)`,
-                }}
-              >
-                <img
-                  src={focusReceipt.image_url}
-                  alt={`Receipt #${focusReceipt.id}`}
-                  draggable={false}
-                  className="max-h-[85vh] max-w-full object-contain rounded-lg shadow-2xl pointer-events-none select-none"
-                />
-              </div>
-
-              {/* ヒント案内 */}
-              <div className="absolute bottom-3 left-4 text-[11px] text-slate-300 bg-slate-900/90 border border-slate-700/80 px-3 py-1.5 rounded-md backdrop-blur shadow-lg pointer-events-none flex items-center gap-2.5">
-                <span>🖱️ <b>ホイール</b>: 拡大・縮小</span>
-                <span className="text-slate-600">|</span>
-                <span>✋ <b>ドラッグ</b>: 掴んで移動</span>
-                <span className="text-slate-600">|</span>
-                <span>⚡ <b>ダブルクリック</b>: 拡大 / リセット</span>
-              </div>
-            </div>
-
-            {/* 右半分 (42%): 明細グリッド編集テーブル */}
-            <div className="w-[42%] h-full bg-slate-900 flex flex-col overflow-hidden text-slate-100">
-              {/* ヘッダ編集部 */}
-              <div className="p-4 bg-slate-800 border-b border-slate-700 space-y-3 shrink-0">
-                <div className="flex items-center justify-between gap-3">
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs text-slate-400">日付:</span>
-                    <input
-                      type="date"
-                      value={focusReceipt.receipt_date}
-                      onChange={(e) =>
-                        handleReceiptFieldChange(
-                          focusReceipt.id,
-                          'receipt_date',
-                          e.target.value
-                        )
-                      }
-                      className="bg-slate-700 text-white border border-slate-600 rounded px-2 py-1 text-xs font-mono focus:outline-none focus:border-indigo-400"
-                    />
-                  </div>
-
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs text-slate-400">領収書合計:</span>
-                    <span className="text-xs text-slate-400">¥</span>
-                    <input
-                      type="number"
-                      value={focusReceipt.amount}
-                      onChange={(e) =>
-                        handleReceiptFieldChange(
-                          focusReceipt.id,
-                          'amount',
-                          e.target.value
-                        )
-                      }
-                      className="bg-slate-700 text-white border border-slate-600 rounded px-2 py-1 text-xs w-28 font-mono text-right font-bold focus:outline-none focus:border-indigo-400"
-                    />
-                  </div>
-                </div>
-
-                <div className="flex items-center justify-between gap-3">
-                  <div className="flex items-center gap-2 flex-1">
-                    <span className="text-xs text-slate-400 shrink-0">支払先:</span>
-                    <input
-                      type="text"
-                      value={focusReceipt.payee}
-                      onChange={(e) =>
-                        handleReceiptFieldChange(
-                          focusReceipt.id,
-                          'payee',
-                          e.target.value
-                        )
-                      }
-                      placeholder="店舗・企業名"
-                      className="w-full bg-slate-700 text-white border border-slate-600 rounded px-2.5 py-1 text-xs focus:outline-none focus:border-indigo-400"
-                    />
-                  </div>
-
-                  {/* 明細合計との差額判定 */}
-                  {(() => {
-                    const fTotal = focusReceipt.items.reduce(
-                      (s, i) => s + (Number(i.amount) || 0),
-                      0
-                    );
-                    const isFDiff = Number(focusReceipt.amount) !== fTotal;
-                    return (
-                      <div className="flex items-center gap-1.5 shrink-0">
-                        <span className="text-[11px] text-slate-300 font-mono">
-                          (明細計: ¥{fTotal.toLocaleString()})
-                        </span>
-                        {isFDiff && (
-                          <span className="px-2 py-0.5 rounded bg-red-500/20 text-red-300 text-xs font-bold border border-red-500/40">
-                            差額あり
-                          </span>
-                        )}
-                      </div>
-                    );
-                  })()}
-                </div>
-
-                {/* メモ入力 */}
-                <div className="flex items-center gap-2">
-                  <span className="text-xs text-slate-400 shrink-0">📝 メモ:</span>
-                  <input
-                    type="text"
-                    value={focusReceipt.memo}
-                    onChange={(e) =>
-                      handleReceiptFieldChange(
-                        focusReceipt.id,
-                        'memo',
-                        e.target.value
-                      )
-                    }
-                    placeholder="例: 会食相手、2行目のみ経費など特記事項"
-                    className="w-full bg-slate-700/80 text-white border border-slate-600 rounded px-2.5 py-1 text-xs focus:outline-none focus:border-indigo-400"
-                  />
-                </div>
-              </div>
-
-              {/* 明細テーブル */}
-              <div className="flex-1 overflow-y-auto">
-                <table className="w-full border-collapse text-left text-xs">
-                  <thead className="sticky top-0 z-10 bg-slate-800 border-b border-slate-700 text-[11px] font-bold text-slate-400 uppercase">
-                    <tr>
-                      <th className="py-2.5 px-3 w-10 text-center">行</th>
-                      <th className="py-2.5 px-3">品名（内容）</th>
-                      <th className="py-2.5 px-3 w-28 text-right">金額 (税込)</th>
-                      <th className="py-2.5 px-3 w-40">税率区分</th>
-                      <th className="py-2.5 px-2 w-8 text-center">削</th>
-                      <th className="py-2.5 px-3 w-20 text-center bg-slate-800/90 text-amber-300 border-l border-slate-700">
-                        修正済
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-800">
-                    {focusReceipt.items.map((item, idx) => {
-                      const currentPresetKey = `${Number(item.tax_rate)}:${
-                        item.is_reduced_tax ? 1 : 0
-                      }`;
-                      const isPresetMatched = taxRateOptions.some(
-                        (opt) => `${opt.rate}:${opt.is_reduced}` === currentPresetKey
-                      );
-
-                      return (
-                        <tr
-                          key={item.key}
-                          className="hover:bg-slate-800/60 transition-colors"
-                        >
-                          <td className="py-2 px-3 text-center text-slate-400 font-mono text-[11px]">
-                            {idx + 1}
-                          </td>
-                          <td className="py-2 px-3">
-                            <input
-                              type="text"
-                              value={item.item_name}
-                              onChange={(e) =>
-                                handleItemChange(
-                                  focusReceipt.id,
-                                  item.key,
-                                  'item_name',
-                                  e.target.value
-                                )
-                              }
-                              className="w-full bg-slate-800 text-white border border-slate-700 rounded px-2 py-1 text-xs focus:outline-none focus:border-indigo-400 focus:bg-slate-700"
-                            />
-                          </td>
-                          <td className="py-2 px-3 text-right">
-                            <input
-                              type="number"
-                              value={item.amount}
-                              onChange={(e) =>
-                                handleItemChange(
-                                  focusReceipt.id,
-                                  item.key,
-                                  'amount',
-                                  e.target.value
-                                )
-                              }
-                              className="w-full bg-slate-800 text-white border border-slate-700 rounded px-2 py-1 text-xs text-right font-mono font-bold focus:outline-none focus:border-indigo-400 focus:bg-slate-700"
-                            />
-                          </td>
-                          <td className="py-2 px-3">
-                            <div className="flex items-center gap-1.5">
-                              <select
-                                value={isPresetMatched ? currentPresetKey : 'custom'}
-                                onChange={(e) =>
-                                  handleTaxPresetChange(
-                                    focusReceipt.id,
-                                    item.key,
-                                    e.target.value
-                                  )
-                                }
-                                className="bg-slate-800 text-white border border-slate-700 rounded px-2 py-1 text-xs focus:outline-none focus:border-indigo-400"
-                              >
-                                {taxRateOptions.map((opt) => (
-                                  <option
-                                    key={opt.id}
-                                    value={`${opt.rate}:${opt.is_reduced}`}
-                                  >
-                                    {opt.name}
-                                  </option>
-                                ))}
-                                {!isPresetMatched && (
-                                  <option value="custom">直接入力(任意%)</option>
-                                )}
-                              </select>
-                              {item.is_reduced_tax && (
-                                <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 font-semibold shrink-0">
-                                  軽減
-                                </span>
-                              )}
-                            </div>
-                          </td>
-                          <td className="py-2 px-2 text-center">
-                            {focusReceipt.items.length > 1 && (
-                              <button
-                                type="button"
-                                onClick={() =>
-                                  handleRemoveItem(focusReceipt.id, item.key)
-                                }
-                                className="text-slate-500 hover:text-red-400 text-xs p-1"
-                                title="行を削除"
-                              >
-                                ✕
-                              </button>
-                            )}
-                          </td>
-                          <td
-                            onClick={() =>
-                              handleItemChange(
-                                focusReceipt.id,
-                                item.key,
-                                'is_modified',
-                                !item.is_modified
-                              )
-                            }
-                            className="py-2 px-3 text-center border-l border-slate-800 cursor-pointer select-none"
-                          >
-                            <button
-                              type="button"
-                              className={`inline-flex items-center justify-center w-16 h-6 rounded font-bold text-[11px] transition-all cursor-pointer ${
-                                item.is_modified
-                                  ? 'bg-amber-500 text-white shadow-xs'
-                                  : 'bg-slate-800 text-slate-400 hover:bg-slate-700 border border-slate-700'
-                              }`}
-                            >
-                              {item.is_modified ? '✎ 修正済' : '未修正'}
-                            </button>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-
-              {/* フッター: 行追加ボタン */}
-              <div className="p-3 bg-slate-800/80 border-t border-slate-700 flex items-center justify-between shrink-0">
-                <button
-                  type="button"
-                  onClick={() => handleAddItem(focusReceipt.id)}
-                  className="px-3 py-1.5 rounded bg-slate-700 hover:bg-slate-600 text-slate-200 text-xs font-bold flex items-center gap-1 cursor-pointer transition-colors"
-                >
-                  ＋ 明細行を追加
-                </button>
-
-                <span className="text-xs text-slate-400">
-                  全 {focusReceipt.items.length} 行 / 手修正済:{' '}
-                  {focusReceipt.items.filter((i) => i.is_modified).length} 行
-                </span>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* 顧客追加・編集モーダル */}
-      {showClientModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-xs p-4">
-          <div className="bg-white rounded-xl shadow-xl border border-slate-200 max-w-md w-full overflow-hidden animate-in fade-in zoom-in-95 duration-150">
-            <div className="px-5 py-4 bg-slate-900 text-white flex items-center justify-between">
-              <h3 className="text-sm font-bold">
-                {clientModalMode === 'create' ? '新規顧客の登録' : '顧客情報の編集'}
-              </h3>
-              <button
-                type="button"
-                onClick={() => setShowClientModal(false)}
-                className="text-slate-400 hover:text-white text-base leading-none"
-              >
-                ✕
-              </button>
-            </div>
-
-            <form onSubmit={handleSaveClient} className="p-5 space-y-4">
-              <div>
-                <label
-                  htmlFor="modal_client_name"
-                  className="block text-xs font-semibold text-slate-700 mb-1"
-                >
-                  顧客名 / 企業名 <span className="text-red-500">*</span>
-                </label>
-                <input
-                  id="modal_client_name"
-                  type="text"
-                  required
-                  placeholder="例: 株式会社ABC商事"
-                  value={clientNameInput}
-                  onChange={(e) => setClientNameInput(e.target.value)}
-                  className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-900 focus:outline-none focus:border-indigo-600 focus:ring-2 focus:ring-indigo-600/20"
-                />
-              </div>
-
-              <div>
-                <label
-                  htmlFor="modal_client_folder"
-                  className="block text-xs font-semibold text-slate-700 mb-1"
-                >
-                  Google Drive フォルダURLまたはID (任意)
-                </label>
-                <input
-                  id="modal_client_folder"
-                  type="text"
-                  placeholder="例: https://drive.google.com/drive/folders/xxxx"
-                  value={clientFolderInput}
-                  onChange={(e) => setClientFolderInput(e.target.value)}
-                  className="w-full rounded-lg border border-slate-300 px-3 py-2 text-xs font-mono text-slate-800 focus:outline-none focus:border-indigo-600"
-                />
-                <p className="text-[11px] text-slate-500 mt-1">
-                  レシート画像を入れるGoogle DriveフォルダのURLを貼り付けます（後からでも設定可能）
-                </p>
-              </div>
-
-              <div className="pt-3 border-t border-slate-100 flex items-center justify-end gap-2">
-                <button
-                  type="button"
-                  onClick={() => setShowClientModal(false)}
-                  className="px-3.5 py-1.5 rounded-lg border border-slate-300 text-xs font-medium text-slate-600 hover:bg-slate-50 transition-colors"
-                >
-                  キャンセル
-                </button>
-                <button
-                  type="submit"
-                  disabled={submittingClient || !clientNameInput.trim()}
-                  className="px-4 py-1.5 rounded-lg text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 transition-colors shadow-xs"
-                >
-                  {submittingClient ? '保存中...' : '登録する'}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
+        <FocusReviewModal
+          receipt={focusReceipt}
+          receipts={receipts}
+          taxRateOptions={taxRateOptions}
+          onSelectReceiptId={setFocusReceiptId}
+          onApproveReceipt={approveReceipt}
+          onReceiptFieldChange={handleReceiptFieldChange}
+          onItemChange={handleItemChange}
+          onTaxPresetChange={handleTaxPresetChange}
+          onAddItem={handleAddItem}
+          onRemoveItem={handleRemoveItem}
+        />
       )}
     </div>
   );

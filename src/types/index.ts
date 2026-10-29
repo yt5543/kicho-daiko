@@ -91,3 +91,85 @@ export interface OcrExtractedReceipt {
   }[];
 }
 
+// ==========================================
+// フロントエンド編集用 型定義 & ヘルパー
+// ==========================================
+
+export interface EditableItem {
+  key: string;
+  item_name: string;
+  amount: string;
+  tax_rate: string;
+  is_reduced_tax: boolean;
+  is_modified: boolean; // 手で修正したかどうかのフラグ
+}
+
+export interface EditableReceipt {
+  id: number;
+  client_id: number;
+  image_url: string;
+  receipt_date: string;
+  amount: string;
+  payee: string;
+  memo: string;
+  status: 'unreviewed' | 'approved';
+  ocr_status: OcrStatus;
+  ocr_retry_count: number;
+  ocr_error: string;
+  items: EditableItem[];
+}
+
+export interface ReceiptStats {
+  totalItems: number;
+  modifiedItems: number;
+  pendingOcrCount: number;
+  failedOcrCount: number;
+}
+
+export const DEFAULT_TAX_RATES: TaxRateOption[] = [
+  { id: 1, rate: 10, name: '10% (標準)', is_reduced: 0, is_active: 1, sort_order: 10 },
+  { id: 2, rate: 8, name: '8% (軽減※)', is_reduced: 1, is_active: 1, sort_order: 20 },
+  { id: 3, rate: 1, name: '1% (軽減※)', is_reduced: 1, is_active: 1, sort_order: 30 },
+  { id: 4, rate: 0, name: '0% (非課税)', is_reduced: 0, is_active: 1, sort_order: 40 },
+];
+
+export function createRowKey(): string {
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+export function mapReceiptToEditable(r: Receipt): EditableReceipt {
+  return {
+    id: r.id,
+    client_id: r.client_id,
+    image_url: r.image_url,
+    receipt_date: r.receipt_date ?? '',
+    amount: String(r.amount ?? 0),
+    payee: r.payee ?? '',
+    memo: r.memo ?? '',
+    status: r.status ?? 'unreviewed',
+    ocr_status: r.ocr_status ?? 'pending',
+    ocr_retry_count: r.ocr_retry_count ?? 0,
+    ocr_error: r.ocr_error ?? '',
+    items:
+      r.items && r.items.length > 0
+        ? r.items.map((item) => ({
+            key: createRowKey(),
+            item_name: item.item_name ?? '',
+            amount: String(item.amount ?? 0),
+            tax_rate: String(item.tax_rate ?? 10),
+            is_reduced_tax: Boolean(item.is_reduced_tax),
+            is_modified: Boolean(item.is_modified),
+          }))
+        : [
+            {
+              key: createRowKey(),
+              item_name: '明細1',
+              amount: String(r.amount ?? 0),
+              tax_rate: '10',
+              is_reduced_tax: false,
+              is_modified: false,
+            },
+          ],
+  };
+}
+
